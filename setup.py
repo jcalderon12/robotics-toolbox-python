@@ -41,6 +41,8 @@ fknm = Extension(
 )
 
 setup(
+    name="roboticstoolbox",
+    version="1.0.0",
     ext_modules=[frne, fknm],
     package_data={"roboticstoolbox": extra_files},
 )

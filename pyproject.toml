@@ -20,7 +20,7 @@ dependencies = [
     "matplotlib",
     "ansitable",
     "swift-sim>=1.0.0",
-    "rtb-data",
+    "rtb-data @ git+https://github.com/jcalderon12/robotics-toolbox-python.git@master#subdirectory=rtb-data",
     "progress",
     "typing_extensions",
 ]
@@ -63,9 +63,8 @@ classifiers = [
 
 
 [project.urls]
-homepage = "https://github.com/petercorke/robotics-toolbox-python"
-documentation = "https://petercorke.github.io/robotics-toolbox-python/"
-repository = "https://github.com/petercorke/robotics-toolbox-python"
+homepage = "https://github.com/jcalderon12/robotics-toolbox-python"
+repository = "https://github.com/jcalderon12/robotics-toolbox-python"
 
 
 [project.optional-dependencies]
