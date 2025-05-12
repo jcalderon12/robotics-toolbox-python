@@ -14,7 +14,7 @@
     <inertial>
       <origin
         xyz="-0.0002775 0.00074547 0.08326"
-        rpy="0 0 0" />
+        rpy="0 0 -1.57" />
       <mass
         value="60.4447" />
       <inertia
@@ -28,7 +28,7 @@
     <visual>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 0 -1.57" />
       <geometry>
         <mesh
           filename="p3bot_description/meshes/base_link.STL" />
@@ -42,7 +42,7 @@
     <collision>
       <origin
         xyz="0 0 0"
-        rpy="0 0 0" />
+        rpy="0 0 -1.57" />
       <geometry>
         <mesh
           filename="p3bot_description/meshes/base_link.STL" />
@@ -115,7 +115,7 @@
     type="fixed">
     <origin
       xyz="0 0 0.21"
-      rpy="0 0 0" />
+      rpy="0 0 -1.57" />
     <parent
       link="base_link" />
     <child
