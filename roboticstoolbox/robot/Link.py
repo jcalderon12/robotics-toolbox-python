@@ -125,7 +125,7 @@ class BaseLink(SceneNode, ABC):
         self,
         ets: Union[ETS, ETS2, ET, ET2] = ETS(),
         name=None,
-        parent: Union[Self, str, None] = None,
+        parent = None,
         joint_name: Union[str, None] = None,
         m: Union[float, None] = None,
         r: Union[ArrayLike, None] = None,
@@ -1052,7 +1052,7 @@ class BaseLink(SceneNode, ABC):
         return self.v.isrotation if self.v else False
 
     @property
-    def parent(self) -> Union[Self, None]:
+    def parent(self):
         """
         Parent link
 
@@ -1077,7 +1077,7 @@ class BaseLink(SceneNode, ABC):
         return self._parent
 
     @parent.setter
-    def parent(self, parent: Union[Self, None]):
+    def parent(self, parent):
         self._parent = parent
 
     @property
