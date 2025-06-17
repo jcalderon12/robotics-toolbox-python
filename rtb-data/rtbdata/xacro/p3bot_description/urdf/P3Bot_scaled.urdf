@@ -359,7 +359,6 @@
     <child link="right_arm" />
     <axis xyz="0 0 0" />
   </joint>
-
   <link name="right_arm_shoulder_link">
     <inertial>
       <origin rpy="0 0 0" xyz="-2.3E-05 -0.010364 -0.07336"/>
@@ -610,7 +609,7 @@
    <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/arm_base_link.STL"/>
+        <mesh filename="p3bot_description/meshes/arm_base_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -620,7 +619,7 @@
       <origin xyz="0 0 0" rpy="0 0 0" />
       <geometry>
         <mesh
-          filename="meshes/arm_base_link.STL" />
+          filename="p3bot_description/meshes/arm_base_link.STL" />
       </geometry>
     </collision>
   </link>
@@ -639,7 +638,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/shoulder_link.STL"/>
+        <mesh filename="p3bot_description/meshes/shoulder_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -648,7 +647,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/shoulder_link.STL"/>
+        <mesh filename="p3bot_description/meshes/shoulder_link.STL"/>
       </geometry>
     </collision>
   </link>
@@ -668,7 +667,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/half_arm_1_link.STL"/>
+        <mesh filename="p3bot_description/meshes/half_arm_1_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -677,7 +676,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/half_arm_1_link.STL"/>
+        <mesh filename="p3bot_description/meshes/half_arm_1_link.STL"/>
       </geometry>
     </collision>
   </link>
@@ -697,7 +696,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/half_arm_2_link.STL"/>
+        <mesh filename="p3bot_description/meshes/half_arm_2_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -706,7 +705,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/half_arm_2_link.STL"/>
+        <mesh filename="p3bot_description/meshes/half_arm_2_link.STL"/>
       </geometry>
     </collision>
   </link>
@@ -726,7 +725,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/forearm_link.STL"/>
+        <mesh filename="p3bot_description/meshes/forearm_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -735,7 +734,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/forearm_link.STL"/>
+        <mesh filename="p3bot_description/meshes/forearm_link.STL"/>
       </geometry>
     </collision>
   </link>
@@ -755,7 +754,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/spherical_wrist_1_link.STL"/>
+        <mesh filename="p3bot_description/meshes/spherical_wrist_1_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -764,7 +763,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/spherical_wrist_1_link.STL"/>
+        <mesh filename="p3bot_description/meshes/spherical_wrist_1_link.STL"/>
       </geometry>
     </collision>
   </link>
@@ -784,7 +783,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/spherical_wrist_2_link.STL"/>
+        <mesh filename="p3bot_description/meshes/spherical_wrist_2_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -793,7 +792,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/spherical_wrist_2_link.STL"/>
+        <mesh filename="p3bot_description/meshes/spherical_wrist_2_link.STL"/>
       </geometry>
     </collision>
   </link>
@@ -813,7 +812,7 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/bracelet_with_vision_link.STL"/>
+        <mesh filename="p3bot_description/meshes/bracelet_with_vision_link.STL"/>
       </geometry>
       <material name="gray">
         <color rgba="0.75294 0.75294 0.75294 1"/>
@@ -822,7 +821,7 @@
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="meshes/bracelet_with_vision_link.STL"/>
+        <mesh filename="p3bot_description/meshes/bracelet_with_vision_link.STL"/>
       </geometry>
     </collision>
   </link>
