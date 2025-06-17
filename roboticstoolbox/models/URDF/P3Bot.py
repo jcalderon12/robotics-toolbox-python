@@ -32,13 +32,12 @@ class P3Bot(Robot):
             links,
             name=name,
             manufacturer="Robolab",
-            gripper_links=links[16],
             urdf_string=urdf_string,
             urdf_filepath=urdf_filepath,
         )
 
         self.qdlim = np.array(
-            [ 2.5, 1.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 3.0]
+            [ 1.5, 0.6, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
         )
 
 if __name__ == "__main__":  # pragma nocover
