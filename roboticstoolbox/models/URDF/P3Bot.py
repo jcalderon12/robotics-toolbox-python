@@ -28,30 +28,30 @@ class P3Bot(Robot):
         )
 
         gripper_r_base = links[16]
-        gripper_l_base = links[29]
+        gripper_l_base = links[34]
 
-        # Find the finger links
-        r_gripper_links = [link for link in links if link.parent == gripper_r_base]
-        l_gripper_links = [link for link in links if link.parent == gripper_l_base]
+        # # Find the finger links
+        # r_gripper_links = [link for link in links if link.parent == gripper_r_base]
+        # l_gripper_links = [link for link in links if link.parent == gripper_l_base]
 
-        # New intermediate links
-        r_gripper = Link(name="r_gripper", parent=gripper_l_base)
-        l_gripper = Link(name="l_gripper", parent=gripper_r_base)
-        links.append(r_gripper)
-        links.append(l_gripper)
+        # # New intermediate links
+        # r_gripper = Link(name="r_gripper", parent=gripper_r_base)
+        # l_gripper = Link(name="l_gripper", parent=gripper_l_base)
+        # links.append(r_gripper)
+        # links.append(l_gripper)
 
-        # Set the finger link parent to be the new gripper base link
-        for g_link in r_gripper_links:
-            g_link._parent = r_gripper
+        # # Set the finger link parent to be the new gripper base link
+        # for g_link in r_gripper_links:
+        #     g_link._parent = r_gripper
 
-        for g_link in l_gripper_links:
-            g_link._parent = l_gripper
+        # for g_link in l_gripper_links:
+            # g_link._parent = l_gripper
 
         super().__init__(
             links,
             name=name,
             manufacturer="Robolab",
-            gripper_links=[r_gripper, l_gripper],
+            # gripper_links=[r_gripper, l_gripper],
             urdf_string=urdf_string,
             urdf_filepath=urdf_filepath,
         )
@@ -60,7 +60,9 @@ class P3Bot(Robot):
             [ 1.5, 0.6, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
         )
 
+
 if __name__ == "__main__":  # pragma nocover
 
     robot = P3Bot()
     print(robot)
+    print(robot.grippers)
