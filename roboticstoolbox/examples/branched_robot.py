@@ -14,7 +14,8 @@ env.launch(realtime=True)
 
 env.set_camera_pose([1.4, 0, 0.7], [0, 0.0, 0.5])
 
-r = rtb.models.YuMi()
+r = rtb.models.P3Bot()
+r.q = r.qz
 env.add(r)
 
 lTep = (
@@ -45,20 +46,28 @@ env.add(l_target_frame)
 env.add(r_target)
 env.add(r_target_frame)
 
+print(f"nº of grippers: {len(r.grippers)}")
 
-l_frame = sg.Axes(0.1, pose=r.grippers[0].tool)
-r_frame = sg.Axes(0.1, pose=r.grippers[1].tool)
+l_frame = sg.Axes(0.1, pose=r.grippers[1].tool)
+r_frame = sg.Axes(0.1, pose=r.grippers[0].tool)
 
-l_frame.attach_to(r.grippers[0].links[0])
-r_frame.attach_to(r.grippers[1].links[0])
+l_frame.attach_to(r.grippers[1].links[0])
+r_frame.attach_to(r.grippers[0].links[0])
 
 env.add(l_frame)
 env.add(r_frame)
 
+# print(r.q)
 
 # Construct an ETS for the left and right arms
-la = r.ets(end=r.grippers[0])
-ra = r.ets(end=r.grippers[1])
+la = r.ets(start="left_arm",end=r.grippers[1])
+ra = r.ets(start="right_arm",end=r.grippers[0])
+
+la = r.ets(end=r.grippers[1])
+ra = r.ets(end=r.grippers[0])
+
+print(f"right_indexs {ra.jindices}, left_indexs {la.jindices}")
+# print(r.ets(end=r.grippers[1]).jindices)
 
 arrivedl = False
 arrivedr = False
@@ -67,13 +76,25 @@ dt = 0.05
 
 gain = np.array([1, 1, 1, 1.6, 1.6, 1.6])
 
-while not arrivedl or not arrivedr:
+ETSs = [la, ra]
+ETS_index = 1
 
-    vl, arrivedl = rtb.p_servo(la.fkine(r.q), lTep, gain=gain, threshold=0.001)
-    vr, arrivedr = rtb.p_servo(ra.fkine(r.q), rTep, gain=gain, threshold=0.001)
+Targets = [lTep, rTep]
 
-    r.qd[la.jindices] = np.linalg.pinv(la.jacobe(r.q)) @ vl
-    r.qd[ra.jindices] = np.linalg.pinv(ra.jacobe(r.q)) @ vr
+while True:
+
+    v, arrived = rtb.p_servo(ETSs[ETS_index].fkine(r.q), Targets[ETS_index], gain=gain, threshold=0.005)
+
+    jacobian_calc = np.linalg.pinv(ETSs[ETS_index].jacobe(r.q)) @ v
+
+    t_qd = np.clip(jacobian_calc, -r.qdlim[ETSs[ETS_index].jindices], r.qdlim[ETSs[ETS_index].jindices])
+
+    r.qd[ETSs[ETS_index].jindices] = t_qd
+
+    if arrived:
+        print(f"arrived at target {ETS_index}")
+        ETS_index = (ETS_index + 1) % len(ETSs)
+        print(f"next target {ETS_index}")
 
     env.step(dt)
 
