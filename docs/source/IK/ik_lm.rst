@@ -1,5 +1,5 @@
-IK_LM - Levemberg-Marquadt Numerical IK
----------------------------------------
+IK_LM - Levenberg-Marquardt Numerical IK
+----------------------------------------
 
 .. currentmodule:: roboticstoolbox.robot.IK
 
@@ -11,6 +11,7 @@ IK_LM - Levemberg-Marquadt Numerical IK
 
 .. autosummary::
    :toctree: stubs
+   :template: method_indexed.rst
 
    ~IK_LM.step
    ~IK_LM.solve
@@ -20,6 +21,7 @@ IK_LM - Levemberg-Marquadt Numerical IK
 
 .. autosummary::
    :toctree: stubs
+   :template: method_indexed.rst
    
    ~IK_LM._random_q
    ~IK_LM._check_jl

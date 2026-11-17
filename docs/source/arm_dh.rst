@@ -1,8 +1,6 @@
 Denavit-Hartenberg models
 =========================
 
-.. codeauthor:: Jesse Haviland
-
 This class is used to model robots defined in terms of standard or modified
 Denavit-Hartenberg notation.
 
@@ -77,7 +75,7 @@ standard or modified.  They can be listed by:
 .. runblock:: pycon
 
    >>> import roboticstoolbox as rtb 
-   >>> rtb.models.list(mtype="DH")
+   >>> rtb.models.catalog(mtype="DH")
 
 .. automodule:: roboticstoolbox.models.DH
    :members:

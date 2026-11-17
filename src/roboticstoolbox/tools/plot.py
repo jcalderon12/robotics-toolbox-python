@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import sys
+from typing import Any
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+#: the view of each plane, for ``view_init``, which is exact: in each the first named
+#: axis points to the right and the second up, in an orthographic projection
+_PLANE_VIEWS: dict[str, dict[str, float]] = {
+    # looking down on the plane from +Z: x to the right, y up
+    "xy": {"elev": 90, "azim": -90},
+    # looking from -Y: x to the right, z up
+    "xz": {"elev": 0, "azim": -90},
+    # looking from +X: y to the right, z up
+    "yz": {"elev": 0, "azim": 0},
+}
+
+
+def plane_view(plane: str) -> dict[str, float]:
+    """
+    The elevation and azimuth of an axis-aligned view of a 3D plot
+
+    :param plane: ``"xy"``, ``"xz"`` or ``"yz"``, in any case
+    :returns: the arguments for ``Axes3D.view_init``
+    :raises ValueError: if ``plane`` is not one of those
+
+    The first axis named is horizontal, increasing to the right, and the second is
+    vertical, increasing upwards.  With an orthographic projection, which is what the
+    robot plots use, the view is a flat plot of that plane.
+    """
+    key = plane.lower() if isinstance(plane, str) else plane
+    if key not in _PLANE_VIEWS:
+        raise ValueError(
+            f"unknown view {plane!r}, choose from: {', '.join(_PLANE_VIEWS)}"
+        )
+    return dict(_PLANE_VIEWS[key])
+
+
+def set_plane_view(ax: Any, plane: str) -> None:
+    """
+    Set an axis-aligned view of the plane of a 3D plot
+
+    :param ax: Matplotlib 3D axes
+    :param plane: ``"xy"``, ``"xz"`` or ``"yz"``, see :func:`plane_view`
+    :raises ValueError: if ``plane`` is not one of those
+
+    This sets the starting view, which is not locked: the plot can be rotated
+    interactively as usual afterwards.
+    """
+    ax.view_init(**plane_view(plane))
+
+
+def apply_block(block: bool | None) -> None:
+    """
+    Apply the ``block`` argument of a plot method: whether to show the figure and wait
+
+    :param block: ``None`` does nothing, ``False`` shows the figures and returns at
+        once, ``True`` shows them and waits until the windows are closed
+
+    This is the one place that turns ``block`` into a Matplotlib call, so that every
+    plot method in the toolbox treats it the same way:
+
+    =========  ===========================  ====================================
+    ``block``  call                         use
+    =========  ===========================  ====================================
+    ``None``   none                         leave showing the figure to the
+                                            environment, eg. a notebook
+    ``False``  ``plt.show(block=False)``    show the figure, carry on
+    ``True``   ``plt.show(block=True)``     show the figure, wait until closed
+    =========  ===========================  ====================================
+
+    ``None`` is not Matplotlib's ``block=None``, which shows the figure and decides
+    for itself whether to wait.  Notebook backends (``inline``, ``ipympl``) ignore
+    the argument.  See the RVC ecosystem ``notebooks.md``.
+
+    .. versionadded:: 1.5.0
+    """
+    if block is not None:
+        plt.show(block=block)
+
+
+def xplot(
+    x: Any,
+    y: Any = None,
+    wrist: bool = False,
+    unwrap: bool = False,
+    block: bool = False,
+    labels: Any = None,
+    loc: Any = None,
+    grid: bool = True,
+    stack: bool = False,
+    **kwargs: Any,
+) -> Any:
+    r"""
+    Plot trajectory data
+
+    :param x: the trajectory, one row per timestep, or the time vector if ``y`` is
+        given
+    :type x: ndarray(m,n) or ndarray(m)
+    :param y: the trajectory, one row per timestep, optional
+    :type y: ndarray(m,n)
+    :param wrist: distinguish arm and wrist joints with line styles
+    :type wrist: bool
+    :param unwrap: unwrap joint angles so that they smoothly increase or
+        decrease when they pass through :math:`\pm \pi`
+    :type unwrap: bool
+    :param block: ``None`` leaves showing the figure to the environment (no
+        ``plt.show`` call), ``False`` shows it and returns at once, ``True`` shows
+        it and waits until it is closed; ignored by notebook backends,
+        defaults to False
+    :param labels: legend labels, default ``q0``, ``q1``, ...
+    :type labels: list of str, or single string with space separated labels
+    :param loc: legend location as per pyplot.legend
+    :type loc: str
+    :param grid: show a grid, defaults to True
+    :param stack: plot each column in its own axes, one above the other, defaults
+        to False
+    :param kwargs: options passed to pyplot.plot
+    :return: the axes of the figure
+
+    This is a convenience function to plot trajectories, where each row represents one time step.
+
+    - ``xplot(q)`` plots the joint angles versus row number.  If ``wrist`` is
+      true and there are six joints, a conventional 6-axis robot is assumed, and
+      the first three joints are shown as solid lines, the last three joints
+      (wrist) are shown as dashed lines. A legend is also displayed.
+
+    - ``xplot(t, q)`` as above but displays the joint angle trajectory versus
+      time given the time vector ``t``, shape (m,).
+
+    Example, which is not run when the documentation is built::
+
+        import numpy as np
+        import roboticstoolbox as rtb
+
+        puma = rtb.models.DH.Puma560()
+        tg = rtb.jtraj(puma.qz, puma.qr, 50)  # a trajectory of 50 steps
+        rtb.xplot(tg.q, wrist=True, labels="q1 q2 q3 q4 q5 q6")
+
+        t = np.linspace(0, 2, 50)  # with a time vector
+        rtb.xplot(t, tg.q)
+
+    .. seealso:: :func:`~roboticstoolbox.tools.trajectory.jtraj`, :func:`numpy.unwrap`
+
+    .. versionchanged:: 1.5.0
+        ``block=None`` does not call ``plt.show``, as documented. It used to call
+        ``plt.show(block=None)``, which waits in a script. The default, ``False``, is unchanged.
+    """
+    if y is None:
+        q = x
+        t = np.arange(0, q.shape[0])
+    else:
+        t = x
+        q = y
+
+    if q.ndim == 1:
+        # if 1D, make it Nx1
+        q = q[:, np.newaxis]
+
+    if t.ndim != 1 or q.shape[0] != t.shape[0]:
+        raise ValueError("dimensions of arguments are not consistent")
+
+    if unwrap:
+        q = np.unwrap(q, axis=0)
+
+    n = q.shape[1]
+
+    if labels is None:
+        labels = [f"q{i}" for i in range(n)]
+    elif isinstance(labels, str):
+        labels = labels.split(" ")
+    elif not isinstance(labels, (tuple, list)):
+        raise TypeError("wrong type for labels")
+
+    fig, ax = plt.subplots()
+
+    if stack:
+        for i in range(n):
+            ax = plt.subplot(n, 1, i + 1)
+
+            plt.plot(t, q[:, i], **kwargs)
+
+            plt.grid(grid)
+            ax.set_ylabel(labels[i])
+            ax.set_xlim(t[0], t[-1])
+
+        ax.set_xlabel("Time (s)")
+
+    else:
+        if n == 6 and wrist:
+            plt.plot(t, q[:, 0:3], **kwargs)
+            plt.plot(t, q[:, 3:6], "--", **kwargs)
+        else:
+            plt.plot(t, q, **kwargs)
+
+        ax.legend(labels, loc=loc)
+
+        plt.grid(grid)
+        ax.set_xlabel("Time (s)")
+        ax.set_ylabel("Joint coordinates (rad,m)")
+        # ax.set_xlim(t[0], t[-1])  fails with RVC3 Sec 3.3.3
+
+    apply_block(block)
+
+    return fig.get_axes()
+
+
+def isnotebook() -> bool:
+    """
+    Determine if code is being run from a Jupyter notebook or JupyterLite
+
+    ``isnotebook`` is True if running Jupyter notebook, JupyterLite, Google Colab, or
+    similar, else False
+
+    :references:
+
+        - https://stackoverflow.com/questions/15411967/how-can-i-check-if-code-
+        is-executed-in-the-ipython-notebook/39662359#39662359
+    """
+    # Check if running in Pyodide/JupyterLite
+    if sys.platform == "emscripten":
+        return True
+
+    # Colab's shell is google.colab._shell.Shell, not a ZMQInteractiveShell
+    if "google.colab" in sys.modules:
+        return True
+
+    # Fall back to checking IPython shell type
+    try:
+        shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
+        if shell == "ZMQInteractiveShell":
+            return True  # Jupyter notebook or qtconsole
+        elif shell == "TerminalInteractiveShell":
+            return False  # Terminal running IPython
+        else:
+            return False  # Other type (?)
+    except NameError:
+        return False  # Probably standard Python interpreter

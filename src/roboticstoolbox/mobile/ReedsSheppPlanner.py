@@ -1,0 +1,588 @@
+from __future__ import annotations
+
+import math
+from typing import Any, NamedTuple
+
+import matplotlib.pyplot as plt
+import numpy as np
+from spatialmath import base
+
+from spatialmath.base.types import ArrayLike3
+from roboticstoolbox.mobile.PlannerBase import PlannerBase
+from roboticstoolbox.tools.types import NDArray
+
+# (found, t, u, v) of a candidate path
+_Segments = tuple[bool, float, float, float]
+
+# ======================================================================== #
+
+# The following code is modified from Python Robotics
+# https://github.com/AtsushiSakai/PythonRobotics/tree/master/PathPlanning
+# D* grid planning
+# Author: Atsushi Sakai
+# Copyright (c) 2016 - 2022 Atsushi Sakai and other contributors: https://github.com/AtsushiSakai/PythonRobotics/contributors
+# Released under the MIT license: https://github.com/AtsushiSakai/PythonRobotics/blob/master/LICENSE
+
+
+class _Path:
+    def __init__(self) -> None:
+        self.lengths: list[float] = []
+        self.ctypes: list[str] = []
+        self.L = 0.0
+        self.x: list[float] = []
+        self.y: list[float] = []
+        self.yaw: list[float] = []
+        self.directions: list[float] = []
+
+    def __repr__(self) -> str:
+        s = f"_Path: L={self.L:.2g}, "
+        s += f"[{', '.join([f'{c}={l:.2g}' for c, l in zip(self.ctypes, self.lengths)])}]"
+        if len(self.x) > 0:
+            s += f", {len(self.x)} points on path"
+        return s
+
+
+def plot_arrow(
+    x: Any,
+    y: Any,
+    yaw: Any,
+    length: float = 1.0,
+    width: float = 0.5,
+    fc: str = "r",
+    ec: str = "k",
+) -> None:
+    """
+    Plot arrow
+    """
+
+    if not isinstance(x, float):
+        for ix, iy, iyaw in zip(x, y, yaw):
+            plot_arrow(ix, iy, iyaw)
+    else:
+        plt.arrow(
+            x,
+            y,
+            length * math.cos(yaw),
+            length * math.sin(yaw),
+            fc=fc,
+            ec=ec,
+            head_width=width,
+            head_length=width,
+        )
+        plt.plot(x, y)
+
+
+def straight_left_straight(x: float, y: float, phi: float) -> _Segments:
+    phi = base.wrap_0_2pi(phi)
+    if y > 0.0 and 0.0 < phi < math.pi * 0.99:
+        xd = -y / math.tan(phi) + x
+        t = xd - math.tan(phi / 2.0)
+        u = phi
+        v = math.sqrt((x - xd) ** 2 + y**2) - math.tan(phi / 2.0)
+        return True, t, u, v
+    elif y < 0.0 < phi < math.pi * 0.99:
+        xd = -y / math.tan(phi) + x
+        t = xd - math.tan(phi / 2.0)
+        u = phi
+        v = -math.sqrt((x - xd) ** 2 + y**2) - math.tan(phi / 2.0)
+        return True, t, u, v
+
+    return False, 0.0, 0.0, 0.0
+
+
+def set_path(
+    paths: list[_Path], lengths: list[float], ctypes: list[str]
+) -> list[_Path]:
+    path = _Path()
+    path.ctypes = ctypes
+    path.lengths = lengths
+
+    # check same path exist
+    for tpath in paths:
+        typeissame = tpath.ctypes == path.ctypes
+        if typeissame:
+            if sum(np.abs(tpath.lengths)) - sum(np.abs(path.lengths)) <= 0.01:
+                return paths  # not insert path
+
+    path.L = sum([abs(i) for i in lengths])
+
+    # Base.Test.@test path.L >= 0.01
+    if path.L >= 0.01:
+        paths.append(path)
+
+    return paths
+
+
+def straight_curve_straight(
+    x: float, y: float, phi: float, paths: list[_Path]
+) -> list[_Path]:
+    flag, t, u, v = straight_left_straight(x, y, phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["S", "L", "S"])
+
+    flag, t, u, v = straight_left_straight(x, -y, -phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["S", "R", "S"])
+
+    return paths
+
+
+def polar(x: float, y: float) -> tuple[float, float]:
+    r = math.sqrt(x**2 + y**2)
+    theta = math.atan2(y, x)
+    return r, theta
+
+
+def left_straight_left(x: float, y: float, phi: float) -> _Segments:
+    u, t = polar(x - math.sin(phi), y - 1.0 + math.cos(phi))
+    if t >= 0.0:
+        v = base.wrap_0_2pi(phi - t)
+        if v >= 0.0:
+            return True, t, u, v
+
+    return False, 0.0, 0.0, 0.0
+
+
+def left_right_left(x: float, y: float, phi: float) -> _Segments:
+    u1, t1 = polar(x - math.sin(phi), y - 1.0 + math.cos(phi))
+
+    if u1 <= 4.0:
+        u = -2.0 * math.asin(0.25 * u1)
+        t = base.wrap_0_2pi(t1 + 0.5 * u + math.pi)
+        v = base.wrap_0_2pi(phi - t + u)
+
+        if t >= 0.0 >= u:
+            return True, t, u, v
+
+    return False, 0.0, 0.0, 0.0
+
+
+def curve_curve_curve(
+    x: float, y: float, phi: float, paths: list[_Path]
+) -> list[_Path]:
+    flag, t, u, v = left_right_left(x, y, phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["L", "R", "L"])
+
+    flag, t, u, v = left_right_left(-x, y, -phi)
+    if flag:
+        paths = set_path(paths, [-t, -u, -v], ["L", "R", "L"])
+
+    flag, t, u, v = left_right_left(x, -y, -phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["R", "L", "R"])
+
+    flag, t, u, v = left_right_left(-x, -y, phi)
+    if flag:
+        paths = set_path(paths, [-t, -u, -v], ["R", "L", "R"])
+
+    # backwards
+    xb = x * math.cos(phi) + y * math.sin(phi)
+    yb = x * math.sin(phi) - y * math.cos(phi)
+
+    flag, t, u, v = left_right_left(xb, yb, phi)
+    if flag:
+        paths = set_path(paths, [v, u, t], ["L", "R", "L"])
+
+    flag, t, u, v = left_right_left(-xb, yb, -phi)
+    if flag:
+        paths = set_path(paths, [-v, -u, -t], ["L", "R", "L"])
+
+    flag, t, u, v = left_right_left(xb, -yb, -phi)
+    if flag:
+        paths = set_path(paths, [v, u, t], ["R", "L", "R"])
+
+    flag, t, u, v = left_right_left(-xb, -yb, phi)
+    if flag:
+        paths = set_path(paths, [-v, -u, -t], ["R", "L", "R"])
+
+    return paths
+
+
+def curve_straight_curve(
+    x: float, y: float, phi: float, paths: list[_Path]
+) -> list[_Path]:
+    flag, t, u, v = left_straight_left(x, y, phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["L", "S", "L"])
+
+    flag, t, u, v = left_straight_left(-x, y, -phi)
+    if flag:
+        paths = set_path(paths, [-t, -u, -v], ["L", "S", "L"])
+
+    flag, t, u, v = left_straight_left(x, -y, -phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["R", "S", "R"])
+
+    flag, t, u, v = left_straight_left(-x, -y, phi)
+    if flag:
+        paths = set_path(paths, [-t, -u, -v], ["R", "S", "R"])
+
+    flag, t, u, v = left_straight_right(x, y, phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["L", "S", "R"])
+
+    flag, t, u, v = left_straight_right(-x, y, -phi)
+    if flag:
+        paths = set_path(paths, [-t, -u, -v], ["L", "S", "R"])
+
+    flag, t, u, v = left_straight_right(x, -y, -phi)
+    if flag:
+        paths = set_path(paths, [t, u, v], ["R", "S", "L"])
+
+    flag, t, u, v = left_straight_right(-x, -y, phi)
+    if flag:
+        paths = set_path(paths, [-t, -u, -v], ["R", "S", "L"])
+
+    return paths
+
+
+def left_straight_right(x: float, y: float, phi: float) -> _Segments:
+    u1, t1 = polar(x + math.sin(phi), y - 1.0 - math.cos(phi))
+    u1 = u1**2
+    if u1 >= 4.0:
+        u = math.sqrt(u1 - 4.0)
+        theta = math.atan2(2.0, u)
+        t = base.wrap_0_2pi(t1 + theta)
+        v = base.wrap_0_2pi(t - phi)
+
+        if t >= 0.0 and v >= 0.0:
+            return True, t, u, v
+
+    return False, 0.0, 0.0, 0.0
+
+
+def generate_path(
+    q0: list[float], q1: list[float], max_curvature: float
+) -> list[_Path]:
+    """
+    Return a set of feasible paths
+
+    :param q0: initial configuration
+    :param q1: final configuration
+    :param max_curvature: maximum path curvature
+    :return: set of paths
+    :rtype: list of _Path
+    """
+    dx = q1[0] - q0[0]
+    dy = q1[1] - q0[1]
+    dth = q1[2] - q0[2]
+    c = math.cos(q0[2])
+    s = math.sin(q0[2])
+    x = (c * dx + s * dy) * max_curvature
+    y = (-s * dx + c * dy) * max_curvature
+
+    # build a list of possible paths
+    paths: list[_Path] = []
+    paths = straight_curve_straight(x, y, dth, paths)
+    paths = curve_straight_curve(x, y, dth, paths)
+    paths = curve_curve_curve(x, y, dth, paths)
+
+    return paths
+
+
+def interpolate(
+    ind: int,
+    length: float,
+    mode: str,
+    max_curvature: float,
+    origin_x: float,
+    origin_y: float,
+    origin_yaw: float,
+    path_x: list[float],
+    path_y: list[float],
+    path_yaw: list[float],
+    directions: list[float],
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    if mode == "S":
+        path_x[ind] = origin_x + length / max_curvature * math.cos(origin_yaw)
+        path_y[ind] = origin_y + length / max_curvature * math.sin(origin_yaw)
+        path_yaw[ind] = origin_yaw
+    else:  # curve
+        ldx = math.sin(length) / max_curvature
+        ldy = 0.0
+        if mode == "L":  # left turn
+            ldy = (1.0 - math.cos(length)) / max_curvature
+        elif mode == "R":  # right turn
+            ldy = (1.0 - math.cos(length)) / -max_curvature
+        gdx = math.cos(-origin_yaw) * ldx + math.sin(-origin_yaw) * ldy
+        gdy = -math.sin(-origin_yaw) * ldx + math.cos(-origin_yaw) * ldy
+        path_x[ind] = origin_x + gdx
+        path_y[ind] = origin_y + gdy
+
+    if mode == "L":  # left turn
+        path_yaw[ind] = origin_yaw + length
+    elif mode == "R":  # right turn
+        path_yaw[ind] = origin_yaw - length
+
+    if length > 0.0:
+        directions[ind] = 1
+    else:
+        directions[ind] = -1
+
+    return path_x, path_y, path_yaw, directions
+
+
+def generate_local_course(
+    total_length: float,
+    lengths: list[float],
+    mode: list[str],
+    max_curvature: float,
+    step_size: float,
+) -> tuple[list[float], list[float], list[float], list[float]]:
+    n_point = math.trunc(total_length / step_size) + len(lengths) + 4
+
+    px = [0.0 for _ in range(n_point)]
+    py = [0.0 for _ in range(n_point)]
+    pyaw = [0.0 for _ in range(n_point)]
+    directions = [0.0 for _ in range(n_point)]
+    ind = 1
+
+    if lengths[0] > 0.0:
+        directions[0] = 1
+    else:
+        directions[0] = -1
+
+    ll = 0.0
+
+    for m, l, i in zip(mode, lengths, range(len(mode))):
+        if l > 0.0:
+            d = step_size
+        else:
+            d = -step_size
+
+        # set origin state
+        ox, oy, oyaw = px[ind], py[ind], pyaw[ind]
+
+        ind -= 1
+        if i >= 1 and (lengths[i - 1] * lengths[i]) > 0:
+            pd = -d - ll
+        else:
+            pd = d - ll
+
+        while abs(pd) <= abs(l):
+            ind += 1
+            px, py, pyaw, directions = interpolate(
+                ind, pd, m, max_curvature, ox, oy, oyaw, px, py, pyaw, directions
+            )
+            pd += d
+
+        ll = l - pd - d  # calc remain length
+
+        ind += 1
+        px, py, pyaw, directions = interpolate(
+            ind, l, m, max_curvature, ox, oy, oyaw, px, py, pyaw, directions
+        )
+
+    # Zero is a valid coordinate, so trim by the last written sample index.
+    return px[: ind + 1], py[: ind + 1], pyaw[: ind + 1], directions[: ind + 1]
+
+
+def pi_2_pi(angle: float) -> float:
+    return (angle + math.pi) % (2 * math.pi) - math.pi
+
+
+def calc_paths(
+    sx: float,
+    sy: float,
+    syaw: float,
+    gx: float,
+    gy: float,
+    gyaw: float,
+    maxc: float,
+    step_size: float,
+) -> list[_Path]:
+    q0 = [sx, sy, syaw]
+    q1 = [gx, gy, gyaw]
+
+    # find set of feasible paths
+    paths = generate_path(q0, q1, maxc)
+    for path in paths:
+        # interpolate the path
+        x, y, yaw, directions = generate_local_course(
+            path.L, path.lengths, path.ctypes, maxc, step_size * maxc
+        )
+
+        # convert global coordinate
+        path.x = [
+            math.cos(-q0[2]) * ix + math.sin(-q0[2]) * iy + q0[0]
+            for (ix, iy) in zip(x, y)
+        ]
+        path.y = [
+            -math.sin(-q0[2]) * ix + math.cos(-q0[2]) * iy + q0[1]
+            for (ix, iy) in zip(x, y)
+        ]
+        path.yaw = [pi_2_pi(iyaw + q0[2]) for iyaw in yaw]
+        path.directions = directions
+        path.lengths = [length / maxc for length in path.lengths]
+        path.L = path.L / maxc
+
+    return paths
+
+
+def reeds_shepp_path_planning(
+    start: ArrayLike3, goal: ArrayLike3, maxc: float, step_size: float
+) -> _Path | None:
+
+    s_x, s_y, s_yaw = start
+    g_x, g_y, g_yaw = goal
+
+    paths = calc_paths(s_x, s_y, s_yaw, g_x, g_y, g_yaw, maxc, step_size)
+
+    if not paths:
+        return None
+
+    minL = float("Inf")
+    best_path_index = -1
+    for i, _ in enumerate(paths):
+        if paths[i].L <= minL:
+            minL = paths[i].L
+            best_path_index = i
+
+    bpath = paths[best_path_index]
+
+    return bpath
+
+
+# ====================== RTB wrapper ============================= #
+
+
+# Copyright (c) 2022 Peter Corke: https://github.com/petercorke/robotics-toolbox-python
+# Released under the MIT license: https://github.com/AtsushiSakai/PythonRobotics/blob/master/LICENSE
+class ReedsSheppStatus(NamedTuple):
+    """Segment types, total length, segment lengths and directions of the path"""
+
+    segments: list[str]
+    length: float
+    seglengths: list[float]
+    direction: list[float]
+
+
+class ReedsSheppPlanner(PlannerBase):
+    r"""
+    Reeds-Shepp path planner
+
+    :param curvature: maximum path curvature, defaults to 1.0
+    :param stepsize: spacing between points on the path, defaults to 0.1
+    :param Planner: Reeds-Shepp path planner
+    :type Planner: ReedsSheppPlanner instance
+
+    ==================   ========================
+    Feature              Capability
+    ==================   ========================
+    Plan                 :math:`\SE{2}`
+    Obstacle avoidance   No
+    Curvature            Discontinuous
+    Motion               Bidirectional
+    ==================   ========================
+
+    Creates a planner that finds the path between two configurations in the
+    plane using forward and backward motion.  The path comprises upto 3 segments
+    that are straight lines, or arcs with  curvature of :math:`\pm`
+    ``curvature``.
+
+    Example:
+
+    .. runblock:: pycon
+
+        >>> from roboticstoolbox import ReedsSheppPlanner
+        >>> from math import pi
+        >>> reedshepp = ReedsSheppPlanner(curvature=1.0)
+        >>> path, status = reedshepp.query(start=(0, 0, pi/2), goal=(1, 0, pi/2))
+        >>> print(path[:5,:])
+        >>> print(status)
+
+    :reference: Optimal paths for a car that goes both forwards and backwards,
+        Reeds, J.A. and L.A. Shepp, Pacific J. Math., 145 (1990),
+        pp. 367–393.
+
+    :thanks: based on Reeds-Shepp path planning from `Python Robotics <https://github.com/AtsushiSakai/PythonRobotics/tree/master/PathPlanning>`_
+
+    .. seealso:: :class:`DubinsPlanner` :class:`PlannerBase`
+    """
+
+    def __init__(
+        self, curvature: float = 1, stepsize: float = 0.1, **kwargs: Any
+    ) -> None:
+        super().__init__(ndims=3, **kwargs)
+        self._curvature = curvature
+        self._stepsize = stepsize
+
+    def __str__(self) -> str:
+        return (
+            super().__str__()
+            + f"\n  curvature={self._curvature}, stepsize={self._stepsize}"
+        )
+
+    def query(
+        self, start: ArrayLike3, goal: ArrayLike3
+    ) -> tuple[NDArray, ReedsSheppStatus]:
+        r"""
+        Find a path between two configurations
+
+        :param start: start configuration :math:`(x, y, \theta)`
+        :param goal: goal configuration :math:`(x, y, \theta)`
+        :return: path and status
+        :rtype: ndarray(N,3), namedtuple
+
+        The path comprises points equally spaced at a distance of ``stepsize``.
+
+        The returned status value has elements:
+
+        +-------------+-----------------------------------------------------+
+        | Element     |  Description                                        |
+        +-------------+-----------------------------------------------------+
+        |``segments`` | a list containing the type of each path segment as  |
+        |             | a single letter code: either "L", "R" or "S" for    |
+        |             | left turn, right turn or straight line respectively.|
+        +-------------+-----------------------------------------------------+
+        | ``length``  | total path length                                   |
+        +-------------+-----------------------------------------------------+
+        |``lengths``  | the length of each path segment. The sign of the    |
+        |             | length indicates the direction of travel.           |
+        +-------------+-----------------------------------------------------+
+        |``direction``| the direction of motion at each point on the path   |
+        +-------------+-----------------------------------------------------+
+
+        .. note:: The direction of turning is reversed when travelling
+            backwards.
+
+        """
+        self.validate_start_goal(start, goal)
+
+        assert self.start is not None and self.goal is not None  # nosec B101: narrows the type for mypy
+        bpath = reeds_shepp_path_planning(
+            start=self.start,
+            goal=self.goal,
+            maxc=self._curvature,
+            step_size=self._stepsize,
+        )
+        if bpath is None:
+            raise RuntimeError("no path found")
+
+        path = np.c_[bpath.x, bpath.y, bpath.yaw]
+
+        return path, ReedsSheppStatus(
+            bpath.ctypes,
+            sum([abs(l) for l in bpath.lengths]),
+            bpath.lengths,
+            bpath.directions,
+        )
+
+
+if __name__ == "__main__":
+    from math import pi
+
+    # start = (-1, -4, -np.radians(20))
+    # goal = (5, 5, np.radians(25))
+
+    start = (0, 0, 0)
+    goal = (0, 0, pi)
+
+    reedsshepp = ReedsSheppPlanner(curvature=1.0, stepsize=0.1)
+    print(reedsshepp)
+    path, status = reedsshepp.query(start, goal)
+    print(status)
+
+    reedsshepp.plot(path=path, direction=status.direction, configspace=True)
+    plt.show(block=True)

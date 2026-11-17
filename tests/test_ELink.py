@@ -11,6 +11,7 @@ import spatialgeometry as gm
 import unittest
 import spatialmath as sm
 from roboticstoolbox.robot.Link import BaseLink
+from tests import skip_no_collision_checking
 
 
 class TestLink(unittest.TestCase):
@@ -109,6 +110,31 @@ class TestLink(unittest.TestCase):
         nt.assert_array_almost_equal(l1.I, I1)
         nt.assert_array_almost_equal(l2.I, I2)
 
+    def test_I_from_lists(self):
+        # a 3x3 matrix, and a 9-vector, given as lists rather than arrays
+        I0 = np.array([[1, 0, 0], [0, 2, 0], [0, 0, 3]])
+
+        l0 = rtb.Link(I=[[1, 0, 0], [0, 2, 0], [0, 0, 3]])
+        l1 = rtb.Link(I=[1, 0, 0, 0, 2, 0, 0, 0, 3])
+
+        nt.assert_array_almost_equal(l0.I, I0)
+        nt.assert_array_almost_equal(l1.I, I0)
+
+        with self.assertRaises(ValueError):
+            rtb.Link(I=[[1, 2, 0], [0, 2, 0], [0, 0, 3]])  # not symmetric
+
+    @skip_no_collision_checking
+    def test_collision_checks_need_a_robot(self):
+        # a link that is not part of a robot cannot update its transform
+        link = rtb.Link()
+        shape = gm.Cuboid([1, 1, 1])
+
+        with self.assertRaises(ValueError):
+            link.iscollided(shape)
+
+        with self.assertRaises(ValueError):
+            link.closest_point(shape)
+
     def test_friction(self):
         l0 = rtb.Link(Tc=[2, -1], B=3, G=2)
 
@@ -175,6 +201,7 @@ qlim  =      -2.8 to      2.8""",  # noqa
         with self.assertRaises(TypeError):
             l0.B = [1, 2]  # type: ignore
 
+    @skip_no_collision_checking
     def test_collision(self):
         p = rtb.models.Panda()
         link = p.links[1]
@@ -213,6 +240,7 @@ qlim  =      -2.8 to      2.8""",  # noqa
     #     with self.assertRaises(TypeError):
     #         l0.geometry = 1  # type: ignore
 
+    @skip_no_collision_checking
     def test_dist(self):
         s0 = gm.Cuboid([1, 1, 1], pose=sm.SE3(0, 0, 0))
         s1 = gm.Cuboid([1, 1, 1], pose=sm.SE3(3, 0, 0))
@@ -227,13 +255,14 @@ qlim  =      -2.8 to      2.8""",  # noqa
         self.assertAlmostEqual(d1, 2.44)  # type: ignore
         self.assertAlmostEqual(d2, None)  # type: ignore
 
+    @skip_no_collision_checking
     def test_collided(self):
         s0 = gm.Cuboid([1, 1, 1], pose=sm.SE3(0, 0, 0))
         s1 = gm.Cuboid([1, 1, 1], pose=sm.SE3(3, 0, 0))
         p = rtb.models.Panda()
         link = p.links[3]
-        c0 = link.collided(s0)
-        c1 = link.collided(s1)
+        c0 = link.iscollided(s0)
+        c1 = link.iscollided(s1)
 
         self.assertTrue(c0)
         self.assertFalse(c1)
@@ -275,6 +304,7 @@ qlim  =      -2.8 to      2.8""",  # noqa
         with self.assertRaises(ValueError):
             link.qlim = [1.0, 2.0]
 
+    @skip_no_collision_checking
     def test_set_collision(self):
         e1 = rtb.ETS(rtb.ET.Ry())
         link = rtb.Link(e1)
@@ -285,6 +315,7 @@ qlim  =      -2.8 to      2.8""",  # noqa
 
         self.assertEqual(link.collision[0], s1)
 
+    @skip_no_collision_checking
     def test_set_collision2(self):
         e1 = rtb.ETS(rtb.ET.Ry())
         link = rtb.Link(e1)
@@ -328,7 +359,7 @@ qlim  =      -2.8 to      2.8""",  # noqa
 
         print(s)
 
-        ans = [" 0", " 0,  0,  0", " 0,  1,  2,  3,  4,  5", " 0", " 0", " 0,  0", " 0"]
+        ans = [" 0", " 0,  0,  0", " 0,  1,  2,  3,  4,  5", " 0", " 0", " 0,  0", " 1"]
 
         self.assertEqual(s, ans)
 

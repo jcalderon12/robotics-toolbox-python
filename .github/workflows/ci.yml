@@ -1,0 +1,211 @@
+# Run tests, coverage, and build docs across all supported platforms
+# Triggers on pushes/PRs to main.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  MPLBACKEND: Agg
+  QT_QPA_PLATFORM: offscreen
+
+jobs:
+  test-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package (core, no swift)
+        run: pip install .[dev]
+
+      # Model tests (YuMi, Valkyrie, ...) load URDFs via the robot_descriptions
+      # package, which does NOT bundle the actual asset data -- on first use of
+      # a given model it lazily `git clone`s a large upstream asset repo
+      # straight into this cache dir. That clone is real network I/O and can
+      # be slow or occasionally flaky (timeout) on a cold runner. Caching the
+      # directory means only the first run after this lands pays that cost.
+      # Keyed by python-version too (not just OS) -- see the "Removed:
+      # robot_descriptions CI caching" tech-debt entry (git history,
+      # tech-debt.md as of commit f46b5c83^) for why a previous attempt at
+      # this (PR #530) didn't actually help: an OS-only key can't distinguish
+      # between the os x python-version matrix's parallel jobs. Bump "v2" to
+      # force a clean re-fetch if the cache ever ends up corrupted/stale.
+      - name: Cache robot_descriptions assets
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/robot_descriptions
+          key: robot-descriptions-v2-${{ runner.os }}-3.12
+
+      - name: Verify compiled extensions built
+        # Catches a silent build/import regression for _fknm_c/_frne_c --
+        # without this, tests/test_fknm_fallback.py's C-vs-Python
+        # cross-validation tests would just skip (they're gated on
+        # _C_AVAILABLE precisely so a missing extension can't masquerade as
+        # a passing comparison), and nothing else would notice.
+        shell: bash
+        run: |
+          python -c '
+          from roboticstoolbox.ets.fknm import _C_AVAILABLE as fknm_c
+          from roboticstoolbox.robot.frne import _C_AVAILABLE as frne_c
+          assert fknm_c and frne_c, f"compiled extension missing: fknm={fknm_c} frne={frne_c}"
+          print("OK: both _fknm_c and _frne_c built")
+          '
+
+      - name: Test (core)
+        run: pytest tests/ --ignore=tests/test_blocks.py -m "not slow" --timeout=50 --timeout_method=thread -q
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Shorten TEMP path (Windows — avoids MAX_PATH breach during C++ compile)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\T | Out-Null
+          "TEMP=C:\T" >> $env:GITHUB_ENV
+          "TMP=C:\T"  >> $env:GITHUB_ENV
+
+      - name: Install package
+        run: pip install .[dev,swift]
+
+      # See the "Cache robot_descriptions assets" step in test-core above --
+      # same reasoning, this job hits the same lazily-cloned model data.
+      - name: Cache robot_descriptions assets
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/robot_descriptions
+          key: robot-descriptions-v2-${{ runner.os }}-${{ matrix.python-version }}
+
+      - name: Verify compiled extensions built
+        # See the same step in test-core for why this matters.
+        shell: bash
+        run: |
+          python -c '
+          from roboticstoolbox.ets.fknm import _C_AVAILABLE as fknm_c
+          from roboticstoolbox.robot.frne import _C_AVAILABLE as frne_c
+          assert fknm_c and frne_c, f"compiled extension missing: fknm={fknm_c} frne={frne_c}"
+          print("OK: both _fknm_c and _frne_c built")
+          '
+
+      - name: Test
+        run: pytest tests/ --ignore=tests/test_blocks.py -m "not slow" --timeout=50 --timeout_method=thread -q
+
+  all-tests-passed:
+    name: All tests passed
+    needs: [test-core, test]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test job results
+        run: |
+          if [ "${{ needs.test-core.result }}" != "success" ] || [ "${{ needs.test.result }}" != "success" ]; then
+            echo "test-core: ${{ needs.test-core.result }}, test: ${{ needs.test.result }}"
+            exit 1
+          fi
+
+  # Advisory for now: the package is being annotated module by module, and
+  # pyproject.toml lists the modules that still have errors.  Not in
+  # `all-tests-passed`, so it cannot block a merge.  Make it required once that
+  # list is empty.
+  mypy:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: pip install .[dev,swift] mypy
+
+      - name: Type check
+        run: mypy
+
+  # Two runs, merged by Codecov.  "compiled" covers the facades that call the
+  # C++ extensions; "pure" builds the pure-Python wheel (as the JupyterLite and
+  # Pyodide builds do) so that the fallbacks, such as DHRobot.rne_python, are
+  # executed rather than bypassed.
+  coverage:
+    name: coverage (${{ matrix.variant }})
+    needs: [test-core, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [compiled, pure]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: pip install .[dev,swift]
+        env:
+          RTB_PURE_WHEEL: ${{ matrix.variant == 'pure' && '1' || '' }}
+
+      - name: Verify which implementation is under test
+        run: |
+          python -c '
+          from roboticstoolbox.ets.fknm import _C_AVAILABLE as fknm_c
+          from roboticstoolbox.robot.frne import _C_AVAILABLE as frne_c
+          want = "${{ matrix.variant }}" == "compiled"
+          assert fknm_c == want and frne_c == want, f"fknm={fknm_c} frne={frne_c}, wanted compiled={want}"
+          '
+
+      # See the "Cache robot_descriptions assets" step in test-core above --
+      # same reasoning, this job hits the same lazily-cloned model data.
+      - name: Cache robot_descriptions assets
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/robot_descriptions
+          key: robot-descriptions-v2-${{ runner.os }}-3.12
+
+      - name: Run coverage
+        env:
+          # Python 3.12's lighter tracing core (sys.monitoring). It counts exactly the
+          # same lines as the default core here, in far less time (#898).
+          COVERAGE_CORE: sysmon
+        run: pytest tests/ --ignore=tests/test_blocks.py --cov=roboticstoolbox --cov-report=xml:coverage.xml -q
+
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
+        with:
+          files: ./coverage.xml
+          flags: ${{ matrix.variant }}
+
+  # Builds the Sphinx docs + JupyterLite site and, on main, deploys them to
+  # GitHub Pages. Steps live in docs.yml (a reusable workflow) so this path
+  # and the manual docs-publish.yml dispatch can never drift apart.
+  docs:
+    needs: [test-core, test]
+    uses: ./.github/workflows/docs.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write

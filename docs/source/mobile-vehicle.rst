@@ -2,7 +2,7 @@ Motion models
 =============
 
 These classes describe vehicle motion models, sometimes referred to as
-kinematic or kino-dynamic models.  They provide methods to:
+kinematic or kinodynamic models.  They provide methods to:
 
 * predict new configuration based on odometry
 * compute configuration derivative
@@ -14,4 +14,5 @@ kinematic or kino-dynamic models.  They provide methods to:
    mobile-vehicle-bicycle
    mobile-vehicle-unicycle
    mobile-vehicle-diffsteer
+   mobile-vehicle-vehicle
    mobile-vehicle-base

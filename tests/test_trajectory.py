@@ -3,10 +3,12 @@
 """
 @author: Peter Corke
 """
+
 import roboticstoolbox.tools.trajectory as tr
 from roboticstoolbox import xplot
 import numpy as np
 import numpy.testing as nt
+import matplotlib.pyplot as plt
 import unittest
 from spatialmath import SE3
 from math import pi
@@ -15,6 +17,97 @@ _eps = np.finfo(np.float64).eps
 
 
 class TestTrajectory(unittest.TestCase):
+    def test_scalar_plot_time_origin(self) -> None:
+        elapsed = np.linspace(0, 3, 13)
+        for generator in (tr.quintic, tr.trapezoidal):
+            for start in (-5, -1, 5):
+                with self.subTest(generator=generator.__name__, start=start):
+                    times = elapsed + start
+                    trajectory = generator(0, 1, times)
+                    try:
+                        trajectory.plot()
+                        axes = plt.gcf().axes
+                        for axis in axes:
+                            nt.assert_allclose(axis.get_xlim(), [start, start + 3])
+                        for axis, values in zip(
+                            axes[1:], (trajectory.qd, trajectory.qdd)
+                        ):
+                            nt.assert_array_equal(axis.lines[0].get_xdata(), times)
+                            nt.assert_array_equal(axis.lines[0].get_ydata(), values)
+                        if generator is tr.trapezoidal:
+                            # A three-second default profile blends for one second.
+                            for line, samples, color in (
+                                (axes[0].lines[0], slice(0, 5), "red"),
+                                (axes[0].lines[1], slice(5, 9), "green"),
+                                (axes[0].lines[3], slice(9, 13), "blue"),
+                            ):
+                                self.assertEqual(line.get_color(), color)
+                                nt.assert_array_equal(line.get_xdata(), times[samples])
+                                nt.assert_array_equal(
+                                    line.get_ydata(), trajectory.q[samples]
+                                )
+                        else:
+                            nt.assert_array_equal(axes[0].lines[0].get_xdata(), times)
+                            nt.assert_array_equal(
+                                axes[0].lines[0].get_ydata(), trajectory.q
+                            )
+                    finally:
+                        plt.close(plt.gcf())
+
+    def test_quintic_time_origin(self) -> None:
+        elapsed = np.linspace(0, 2, 9)
+        expected = tr.quintic(0, 1, elapsed, qd0=0.2, qdf=-0.1)
+        for start in (-5, 5):
+            with self.subTest(start=start):
+                times = elapsed + start
+                actual = tr.quintic(0, 1, times, qd0=0.2, qdf=-0.1)
+                nt.assert_array_equal(actual.t, times)
+                self.assertTrue(actual.istime)
+                nt.assert_allclose(actual.q[[0, -1]], [0, 1], atol=1e-12)
+                nt.assert_allclose(actual.qd[[0, -1]], [0.2, -0.1], atol=1e-12)
+                for field in ("q", "qd", "qdd"):
+                    nt.assert_allclose(
+                        getattr(actual, field), getattr(expected, field), atol=1e-12
+                    )
+
+    def test_trapezoidal_time_origin(self) -> None:
+        elapsed = np.linspace(0, 2, 9)
+        for start in (-5, 5):
+            for velocity in (None, 0.75):
+                with self.subTest(start=start, velocity=velocity):
+                    times = elapsed + start
+                    expected = tr.trapezoidal(0, 1, elapsed, V=velocity)
+                    actual = tr.trapezoidal(0, 1, times, V=velocity)
+                    nt.assert_array_equal(actual.t, times)
+                    self.assertTrue(actual.istime)
+                    self.assertAlmostEqual(actual.tblend, expected.tblend)
+                    nt.assert_allclose(actual.q[[0, -1]], [0, 1], atol=1e-12)
+                    for field in ("q", "qd", "qdd"):
+                        nt.assert_allclose(
+                            getattr(actual, field), getattr(expected, field), atol=1e-12
+                        )
+
+    def test_trapezoidal_zero_blend_velocity_boundary(self) -> None:
+        for q0, qf in ((0.0, 1.0), (1.0, 0.0)):
+            with self.subTest(q0=q0, qf=qf):
+                trajectory = tr.trapezoidal(q0, qf, np.array([0.0, 0.5, 1.0]), V=1.0)
+
+                self.assertEqual(trajectory.tblend, 0.0)
+                nt.assert_allclose(trajectory.q, [q0, 0.5, qf])
+                nt.assert_allclose(trajectory.qd, np.full(3, qf - q0))
+                nt.assert_allclose(trajectory.qdd, np.zeros(3))
+
+    def test_mtraj_time_origin(self) -> None:
+        elapsed = np.linspace(0, 2, 9)
+        for generator in (tr.quintic, tr.trapezoidal):
+            with self.subTest(generator=generator.__name__):
+                expected = tr.mtraj(generator, [0, 2], [1, -1], elapsed)
+                actual = tr.mtraj(generator, [0, 2], [1, -1], elapsed + 5)
+                nt.assert_array_equal(actual.t, elapsed + 5)
+                for field in ("q", "qd", "qdd"):
+                    nt.assert_allclose(
+                        getattr(actual, field), getattr(expected, field), atol=1e-12
+                    )
 
     def test_quintic(self):
 
@@ -81,20 +174,19 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(sdd[-1], 0)
 
         with self.assertRaises(TypeError):
-            tr.quintic(s1, s2, 'not time')
+            tr.quintic(s1, s2, "not time")
 
     def test_quintic_plot(self):
         t = tr.quintic(0, 1, 50)
         t.plot()
 
-        t = tr.quintic(0, 1, np.linspace(0,1,50))
+        t = tr.quintic(0, 1, np.linspace(0, 1, 50))
         t.plot()
-    
 
     def test_trapezoidal(self):
 
-        s1 = 1.
-        s2 = 2.
+        s1 = 1.0
+        s2 = 2.0
 
         # no boundary conditions
 
@@ -145,7 +237,7 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(sd[5], 0.2)
 
         with self.assertRaises(TypeError):
-            tr.trapezoidal(s1, s2, 'not time')
+            tr.trapezoidal(s1, s2, "not time")
 
         with self.assertRaises(ValueError):
             tr.trapezoidal(s1, s2, t, V=0.000000001)
@@ -156,7 +248,7 @@ class TestTrajectory(unittest.TestCase):
     def test_trapezoidal_plot(self):
         t = tr.trapezoidal(0, 1, 50)
         t.plot()
-        t = tr.trapezoidal(0, 1, np.linspace(0,1,50))
+        t = tr.trapezoidal(0, 1, np.linspace(0, 1, 50))
         t.plot()
 
     def test_plot(self):
@@ -192,8 +284,8 @@ class TestTrajectory(unittest.TestCase):
         nt.assert_array_almost_equal(T[1].A, T0.A)
         nt.assert_array_almost_equal(T[2].A, SE3().A)
 
-        T0 = SE3.Rx(-pi/2)
-        T1 = SE3.Rx(pi/2)
+        T0 = SE3.Rx(-pi / 2)
+        T1 = SE3.Rx(pi / 2)
 
         T = tr.ctraj(T0, T1, 3)
         self.assertEqual(len(T), 3)
@@ -202,7 +294,7 @@ class TestTrajectory(unittest.TestCase):
         nt.assert_array_almost_equal(T[1].A, SE3().A)
 
         with self.assertRaises(TypeError):
-            tr.ctraj(T0, T1, 'hello')
+            tr.ctraj(T0, T1, "hello")
 
     def test_cmstraj(self):
         tr.cmstraj()
@@ -220,16 +312,58 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(q.shape, (11, 6))
         self.assertTrue(np.allclose(q[0, :], q1))
         self.assertTrue(np.allclose(q[-1, :], q2))
-        self.assertTrue(np.allclose(q[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                q[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qd.shape, (11, 6))
-        self.assertTrue(np.allclose(qd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qd[-1, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qdd.shape, (11, 6))
-        self.assertTrue(np.allclose(qdd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[-1, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qdd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         # with a time vector
         t = np.linspace(0, 2, 11)
@@ -242,16 +376,58 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(q.shape, (11, 6))
         self.assertTrue(np.allclose(q[0, :], q1))
         self.assertTrue(np.allclose(q[-1, :], q2))
-        self.assertTrue(np.allclose(q[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                q[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qd.shape, (11, 6))
-        self.assertTrue(np.allclose(qd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qd[-1, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qdd.shape, (11, 6))
-        self.assertTrue(np.allclose(qdd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[-1, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qdd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         # unit testing jtraj with trapezoidal
         q1 = np.r_[1, 2, 3, 4, 5, 6]
@@ -265,11 +441,32 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(q.shape, (11, 6))
         self.assertTrue(np.allclose(q[0, :], q1))
         self.assertTrue(np.allclose(q[-1, :], q2))
-        self.assertTrue(np.allclose(q[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                q[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qd.shape, (11, 6))
-        self.assertTrue(np.allclose(qd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qd[-1, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qdd.shape, (11, 6))
 
@@ -284,11 +481,32 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(q.shape, (11, 6))
         self.assertTrue(np.allclose(q[0, :], q1))
         self.assertTrue(np.allclose(q[-1, :], q2))
-        self.assertTrue(np.allclose(q[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                q[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qd.shape, (11, 6))
-        self.assertTrue(np.allclose(qd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qd[-1, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qdd.shape, (11, 6))
 
@@ -305,16 +523,58 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(q.shape, (11, 6))
         self.assertTrue(np.allclose(q[0, :], q1))
         self.assertTrue(np.allclose(q[-1, :], q2))
-        self.assertTrue(np.allclose(q[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                q[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qd.shape, (11, 6))
-        self.assertTrue(np.allclose(qd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qd[-1, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qdd.shape, (11, 6))
-        self.assertTrue(np.allclose(qdd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[-1, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qdd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         # with a time vector
         t = np.linspace(0, 2, 11)
@@ -327,16 +587,58 @@ class TestTrajectory(unittest.TestCase):
         self.assertAlmostEqual(q.shape, (11, 6))
         self.assertTrue(np.allclose(q[0, :], q1))
         self.assertTrue(np.allclose(q[-1, :], q2))
-        self.assertTrue(np.allclose(q[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                q[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qd.shape, (11, 6))
-        self.assertTrue(np.allclose(qd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qd[-1, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         self.assertAlmostEqual(qdd.shape, (11, 6))
-        self.assertTrue(np.allclose(qdd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[-1, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[5, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qdd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[5, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         # test with boundary conditions
         qone = np.ones((6,))
@@ -354,8 +656,22 @@ class TestTrajectory(unittest.TestCase):
         self.assertTrue(np.allclose(qd[-1, :], qone))
 
         self.assertAlmostEqual(qdd.shape, (11, 6))
-        self.assertTrue(np.allclose(qdd[0, :], np.zeros(6,)))
-        self.assertTrue(np.allclose(qdd[-1, :], np.zeros(6,)))
+        self.assertTrue(
+            np.allclose(
+                qdd[0, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
+        self.assertTrue(
+            np.allclose(
+                qdd[-1, :],
+                np.zeros(
+                    6,
+                ),
+            )
+        )
 
         with self.assertRaises(ValueError):
             tr.jtraj(q1, [1, 1, 2], t)
@@ -368,51 +684,50 @@ class TestTrajectory(unittest.TestCase):
 
     def test_mstraj(self):
 
-        via = np.array([
-            [4, 1],
-            [4, 4],
-            [5, 2],
-            [2, 5]
-            ])
+        via = np.array([[4, 1], [4, 4], [5, 2], [2, 5]])
 
         # Test with QDMAX
         out = tr.mstraj(via, dt=1, tacc=1, qdmax=[2, 1], q0=[4, 1])
 
         # expected_out = mstraj(via, [ 2 1 ],[],[4 1],1,1,1);
-        expected_out = np.array([
-                        [4.0000,    1.0000],
-                        [4.0000,    1.7500],
-                        [4.0000,    2.5000],
-                        [4.0000,    3.2500],
-                        [4.3333,    3.3333],
-                        [4.6667,    2.6667],
-                        [4.2500,    2.7500],
-                        [3.5000,    3.5000],
-                        [2.7500,    4.2500],
-                        [2.0000,    5.0000]
-                        ])
+        expected_out = np.array(
+            [
+                [4.0000, 1.0000],
+                [4.0000, 1.7500],
+                [4.0000, 2.5000],
+                [4.0000, 3.2500],
+                [4.3333, 3.3333],
+                [4.6667, 2.6667],
+                [4.2500, 2.7500],
+                [3.5000, 3.5000],
+                [2.7500, 4.2500],
+                [2.0000, 5.0000],
+            ]
+        )
         nt.assert_array_almost_equal(out.q, expected_out, decimal=4)
 
         # Test with QO
         # expected_out = mstraj(via, [], [2 1 3 4],[4 1],1,1,1);
         out = tr.mstraj(via, dt=1, tacc=1, tsegment=[2, 1, 3, 4], q0=[4, 1])
-        expected_out = np.array([
-                        [4.0000,    1.0000],
-                        [4.0000,    4.0000],
-                        [4.3333,    3.3333],
-                        [4.6667,    2.6667],
-                        [4.2500,    2.7500],
-                        [3.5000,    3.5000],
-                        [2.7500,    4.2500],
-                        [2.0000,    5.0000]
-                        ])
+        expected_out = np.array(
+            [
+                [4.0000, 1.0000],
+                [4.0000, 4.0000],
+                [4.3333, 3.3333],
+                [4.6667, 2.6667],
+                [4.2500, 2.7500],
+                [3.5000, 3.5000],
+                [2.7500, 4.2500],
+                [2.0000, 5.0000],
+            ]
+        )
         nt.assert_array_almost_equal(out.q, expected_out, decimal=4)
 
         out = tr.mstraj(via, dt=1, tacc=1, tsegment=[1, 2, 3, 4], q0=via[0, :])
         self.assertEqual(out.t.shape[0], out.q.shape[0])
 
         self.assertIsInstance(out.info, list)
-        self.assertEqual(len(out.info), via.shape[0]+1)
+        self.assertEqual(len(out.info), via.shape[0] + 1)
 
         tr.mstraj(via, dt=1, tacc=1, qdmax=[2, 1])
         tr.mstraj(via, dt=1, tacc=1, qdmax=2)
@@ -436,16 +751,57 @@ class TestTrajectory(unittest.TestCase):
             tr.mstraj(via, dt=1, tacc=[1, 2, 3, 4, 5], qdmax=[2, 1])
 
         with self.assertRaises(ValueError):
-            tr.mstraj(
-                via, dt=1, tacc=1, qdmax=[2, 1], qd0=[1, 2, 3], q0=[1, 2])
+            tr.mstraj(via, dt=1, tacc=1, qdmax=[2, 1], qd0=[1, 2, 3], q0=[1, 2])
 
         with self.assertRaises(ValueError):
-            tr.mstraj(
-                via, dt=1, tacc=1, qdmax=[2, 1], qdf=[1, 2, 3], q0=[1, 2])
+            tr.mstraj(via, dt=1, tacc=1, qdmax=[2, 1], qdf=[1, 2, 3], q0=[1, 2])
+
+    def test_mstraj_derivatives_without_blends(self):
+        via = np.array([[0.0, 0.0], [1.0, 2.0], [3.0, 0.0]])
+        out = tr.mstraj(via, dt=0.1, tacc=0, tsegment=[1.0, 2.0])
+
+        self.assertEqual(out.q.shape, (30, 2))
+        self.assertEqual(out.qd.shape, out.q.shape)
+        self.assertEqual(out.qdd.shape, out.q.shape)
+        self.assertTrue(out.istime)
+        nt.assert_allclose(out.qd[:10], np.tile([1.0, 2.0], (10, 1)))
+        nt.assert_allclose(out.qd[10:], np.tile([1.0, -1.0], (20, 1)))
+        nt.assert_array_equal(out.qdd, np.zeros_like(out.q))
+
+    def test_mstraj_derivatives_with_blends(self):
+        dt = 0.005
+        qdf = [-0.05, 0.1]
+        out = tr.mstraj(
+            np.array([[0.0, 0.0], [1.0, -2.0]]),
+            dt=dt,
+            tacc=0.4,
+            qdmax=1.0,
+            qd0=[0.1, -0.2],
+            qdf=qdf,
+        )
+
+        self.assertEqual(out.qd.shape, out.q.shape)
+        self.assertEqual(out.qdd.shape, out.q.shape)
+        self.assertTrue(np.isfinite(out.qd).all())
+        self.assertTrue(np.isfinite(out.qdd).all())
+        nt.assert_allclose(out.qd[-1], qdf, atol=1e-12)
+        nt.assert_allclose(out.qdd[-1], [0, 0], atol=1e-10)
+
+        # Sampled velocities and accelerations must describe the returned path,
+        # including the polynomial blends at either end of the segment.
+        for i in (5, 10, -11, -6):
+            with self.subTest(index=i):
+                nt.assert_allclose(
+                    out.qd[i], (out.q[i + 1] - out.q[i - 1]) / (2 * dt), atol=0.01
+                )
+                nt.assert_allclose(
+                    out.qdd[i],
+                    (out.q[i + 1] - 2 * out.q[i] + out.q[i - 1]) / dt**2,
+                    atol=0.1,
+                )
 
 
-if __name__ == '__main__':    # pragma nocover
-
+if __name__ == "__main__":  # pragma nocover
     unittest.main()
 
     # function mtraj_quintic_test(tc)

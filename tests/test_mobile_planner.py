@@ -1,26 +1,30 @@
-from collections import namedtuple
+from contextlib import redirect_stdout
+from io import StringIO
 from math import pi
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 import numpy.testing as nt
 import numpy as np
 import unittest
-import spatialmath.base as sm
 
 from roboticstoolbox.mobile import *
 
 
 class TestPlanners(unittest.TestCase):
-
     def test_occgrid(self):
         g = np.zeros((100, 120))
         g[20:30, 50:80] = 1
 
-        og = BinaryOccupancyGrid(g, name='my grid')
+        og = BinaryOccupancyGrid(g, name="my grid")
 
         self.assertEqual(og.shape, g.shape)
-        
+
         s = str(og)
         self.assertIsInstance(s, str)
-        self.assertEqual(s, "BinaryOccupancyGrid[my grid]: 120 x 100, cell size=1, x = [0.0, 119.0], y = [0.0, 99.0], 2.5% occupied")
+        self.assertEqual(
+            s,
+            "BinaryOccupancyGrid[my grid]: 120 x 100, cell size=1, x = [0.0, 119.0], y = [0.0, 99.0], 2.5% occupied",
+        )
 
         self.assertEqual(og.xmin, 0)
         self.assertEqual(og.xmax, 119)
@@ -58,12 +62,15 @@ class TestPlanners(unittest.TestCase):
         self.assertTrue(og2.isoccupied((80, 30)))
         self.assertTrue(og2.isoccupied((45, 20)))
 
-        self.assertEqual(str(og2), "BinaryOccupancyGrid[my grid]: 120 x 100, cell size=1, x = [0.0, 119.0], y = [0.0, 99.0], 6.3% occupied")
+        self.assertEqual(
+            str(og2),
+            "BinaryOccupancyGrid[my grid]: 120 x 100, cell size=1, x = [0.0, 119.0], y = [0.0, 99.0], 6.3% occupied",
+        )
 
         # check no change to original
         self.assertFalse(og.isoccupied((80, 30)))
 
-        og = BinaryOccupancyGrid(g, cellsize=0.1, origin=(2,4), name='foo')
+        og = BinaryOccupancyGrid(g, cellsize=0.1, origin=(2, 4), name="foo")
 
         self.assertEqual(og.xmin, 2)
         self.assertEqual(og.xmax, 13.9)
@@ -74,39 +81,45 @@ class TestPlanners(unittest.TestCase):
         self.assertFalse(og.isoccupied((3, 5)))
 
         og.inflate(0.5)
-        self.assertEqual(str(og), "BinaryOccupancyGrid[foo]: 120 x 100, cell size=0.1, x = [2.0, 13.9], y = [4.0, 13.9], 6.3% occupied")
+        self.assertEqual(
+            str(og),
+            "BinaryOccupancyGrid[foo]: 120 x 100, cell size=0.1, x = [2.0, 13.9], y = [4.0, 13.9], 6.3% occupied",
+        )
 
     def test_bug2(self):
         pass
 
     def test_dubins(self):
 
-        start = (0, 0, pi/2)
-        goal = (1, 0, pi/2)
+        start = (0, 0, pi / 2)
+        goal = (1, 0, pi / 2)
 
         dubins = DubinsPlanner(curvature=1.0)
         path, status = dubins.query(start, goal)
 
         self.assertIsInstance(path, np.ndarray)
-        self.assertEqual(path.shape, (74,3))
+        self.assertEqual(path.shape, (74, 3))
         self.assertEqual(status.__class__.__name__, "DubinsStatus")
-        self.assertTrue(hasattr(status, 'segments'))
-        self.assertTrue(hasattr(status, 'length'))
+        self.assertTrue(hasattr(status, "segments"))
+        self.assertTrue(hasattr(status, "length"))
 
     def test_reedsshepp(self):
 
-        start = (0, 0, pi/2)
-        goal = (1, 0, pi/2)
+        start = (0, 0, pi / 2)
+        goal = (1, 0, pi / 2)
 
         rs = ReedsSheppPlanner(curvature=1.0)
         path, status = rs.query(start, goal)
 
         self.assertIsInstance(path, np.ndarray)
-        self.assertEqual(path.shape, (65,3))
+        # Keep the terminal pose, whose x coordinate is zero in the local frame.
+        self.assertEqual(path.shape, (66, 3))
+        nt.assert_allclose(path[0], start, atol=1e-12)
+        nt.assert_allclose(path[-1], goal, atol=1e-12)
         self.assertEqual(status.__class__.__name__, "ReedsSheppStatus")
-        self.assertTrue(hasattr(status, 'segments'))
-        self.assertTrue(hasattr(status, 'length'))
-        self.assertTrue(hasattr(status, 'direction'))
+        self.assertTrue(hasattr(status, "segments"))
+        self.assertTrue(hasattr(status, "length"))
+        self.assertTrue(hasattr(status, "direction"))
 
     # def test_bug2(self):
 
@@ -168,10 +181,44 @@ class TestPlanners(unittest.TestCase):
     #     for k in range(len(path)-1):
     #         d = np.linalg.norm(path[k] - path[k+1])
     #         self.assertTrue(d < 1.5)
-            
+
     #     dx.plot()
     #     dx.plot(path=path)
-if __name__ == '__main__':  # pragma nocover
 
+
+class TestRRTQuery(unittest.TestCase):
+    def test_returns_path_without_printing(self):
+        """Query must preserve its path and status without printing graph vertices."""
+        from roboticstoolbox.mobile.RRTPlanner import RRTPlanner
+
+        start = (1.0, 2.0, 0.0)
+        segment = np.array([[1.0, 2.0, 0.0], [2.0, 3.0, 0.0]])
+        root = SimpleNamespace(path=None)
+        vertex = SimpleNamespace(path=segment)
+        vertices = [root, vertex]
+
+        planner = object.__new__(RRTPlanner)
+        planner._ndims = 3
+        planner._occgrid = None
+        planner._start = None
+        planner._goal = None
+        planner.g = MagicMock()
+        planner.g.closest.return_value = (vertex, 0.25)
+        planner.g.__getitem__.return_value = root
+        planner.g.path_UCS.return_value = (vertices, 1.5, None)
+
+        captured = StringIO()
+        with redirect_stdout(captured):
+            path, status = planner.query(start)
+
+        np.testing.assert_array_equal(path, segment)
+        self.assertEqual(status.length, 1.5)
+        self.assertEqual(status.initial_d, 0.25)
+        self.assertIs(status.vertices, vertices)
+        np.testing.assert_array_equal(planner.start, start)
+        self.assertEqual(captured.getvalue(), "")
+
+
+if __name__ == "__main__":  # pragma nocover
     unittest.main()
     # pytest.main(['tests/test_SerialLink.py'])

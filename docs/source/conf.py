@@ -12,19 +12,23 @@ import os
 import sys
 import re
 
+from sphinx_codeautolink import clean_ipython, clean_pycon
+
 # Defined relative to configuration directory which is where this file conf.py lives
 sys.path.append(os.path.abspath("exts"))
 
 # -------- Project information -------------------------------------------------------#
 
 project = "Robotics Toolbox for Python"
-copyright = "2023, Jesse Haviland and Peter Corke"
+copyright = "2020-present, Jesse Haviland and Peter Corke"
 author = "Jesse Haviland and Peter Corke"
 
-# Parse version number out of setup.py
-with open("../../setup.py", encoding="utf-8") as f:
-    setup_py = f.read()
-    m = re.search(r"version='([0-9\.]*)',", setup_py, re.MULTILINE)
+# Parse version number out of pyproject.toml
+_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+with open(os.path.join(_root, "pyproject.toml"), encoding="utf-8") as f:
+    pyproject_src = f.read()
+    m = re.search(r'^version\s*=\s*"([0-9.]*)"', pyproject_src, re.MULTILINE)
+    version = m.group(1) if m else "unknown"
 
 # -------- General configuration -----------------------------------------------------#
 
@@ -39,6 +43,7 @@ extensions = [
     "sphinx.ext.coverage",
     "sphinx.ext.doctest",
     "sphinx.ext.inheritance_diagram",
+    "sphinx.ext.graphviz",
     "sphinx.ext.autosummary",
     "blockname",
     "sphinx.ext.intersphinx",
@@ -47,27 +52,42 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx_autodoc_typehints",
     # "scanpydoc.elegant_typehints",
-    "sphinx_autorun",
+    "sphinx_pyrunblock",
     "sphinx_favicon",
+    "sphinxcontrib.bibtex",
+    "sphinx_copybutton",
+    "sphinx_codeautolink",
 ]
+
+bibtex_bibfiles = ["refs.bib"]
+
+# diagrams written in the dot language, eg. IK/ik_overview.dot
+graphviz_output_format = "svg"
 
 autosummary_generate = True
 autodoc_member_order = "bysource"
+
+# roboticstoolbox.blocks.* subclasses bdsim's block types, but bdsim is a
+# `dev`-only dependency here (unlike MVTB, where it's genuinely optional) --
+# the docs CI job installs `.[docs]` only, so bdsim is never actually
+# importable there. Mock it so autodoc can still introspect the blocks
+# modules' own classes/docstrings without a real bdsim install. Same fix as
+# MVTB's conf.py, which hit this first.
+autodoc_mock_imports = ["bdsim", "bdsim.block_types"]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
 exclude_patterns = ["test_*"]
 
-# Options for spinx_autorun, used for inline examples
+# Options for sphinx_pyrunblock, used for inline examples (same config API
+# as its predecessor sphinx_autorun, which it renamed/replaced from)
 # choose UTF-8 encoding to allow for Unicode characters, eg. ansitable
 # Python session setup, turn off color printing for SE3, set NumPy precision
 autorun_languages = {}
 autorun_languages["pycon_output_encoding"] = "UTF-8"
 autorun_languages["pycon_input_encoding"] = "UTF-8"
-autorun_languages[
-    "pycon_runfirst"
-] = """
+autorun_languages["pycon_runfirst"] = """
 from spatialmath import SE3
 SE3._color = False
 import numpy as np
@@ -80,9 +100,11 @@ ANSITable._color = False
 
 html_theme = "sphinx_rtd_theme"
 
+# show ``ET.Rz``, not ``roboticstoolbox.ets.ET.ET.Rz``, in signatures
+add_module_names = False
+
 html_theme_options = {
     "logo_only": False,
-    "display_version": True,
     "prev_next_buttons_location": "None",
     "analytics_id": "G-11Q6WJM565",
     "style_external_links": False,
@@ -90,7 +112,7 @@ html_theme_options = {
 }
 
 html_logo = "../figs/RobToolBox_RoundLogoB.png"
-html_last_updated_fmt = "%d-%b-%Y"
+html_last_updated_fmt = "%Y-%m-%d"
 html_show_sourcelink = False
 show_authors = True
 html_show_sphinx = False
@@ -98,10 +120,13 @@ html_show_sphinx = False
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ["_static"]
+html_static_path = ["_static", "../../src/roboticstoolbox/blocks/Icons"]
 html_css_files = [
     "css/custom.css",
 ]
+
+# click on a Graphviz diagram to open it full size in a new tab
+html_js_files = ["graphviz-zoom.js"]
 default_role = "py:obj"
 
 # -------- Options for LaTeX/PDF output ----------------------------------------------#
@@ -112,7 +137,6 @@ latex_elements = {
     # The paper size ('letterpaper' or 'a4paper').
     "papersize": "a4paper",
     "fncychap": "\\usepackage{fncychap}",
-    "maketitle": "blah blah blah",
 }
 
 # Use RVC book notation for maths
@@ -158,11 +182,43 @@ mathjax3_config = {
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
-    "numpy": ("http://docs.scipy.org/doc/numpy/", None),
-    "scipy": ("http://docs.scipy.org/doc/scipy/reference/", None),
-    "matplotlib": ("http://matplotlib.sourceforge.net/", None),
-    "spatialmath": ("https://petercorke.github.io/spatialmath-python/", None),
+    "numpy": ("https://numpy.org/doc/stable/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "matplotlib": ("https://matplotlib.org/stable/", None),
+    "spatialmath": ("https://spatialmath-python.rai-inst.com/", None),
+    "pgraph": ("https://petercorke.github.io/pgraph-python/", None),
+    "sympy": ("https://docs.sympy.org/latest/", None),
+    "spatialgeometry": ("https://jhavl.github.io/spatialgeometry/", None),
+    "swift": ("https://jhavl.github.io/swift/", None),
 }
+
+# -------- Nitpicky cross-reference checking ---------------------------------------#
+#
+# ``sphinx-build -n`` reports every cross-reference that does not resolve.  Real
+# ones are fixed at the source.  What is listed here can never resolve, and
+# is ignored so that the remainder is a short list worth reading:
+#
+# - the descriptive words of a type in a docstring (``ndarray(6,n)``, ``array_like``,
+#   ``2-tuple``, ``optional``, the dimensions 3, 4, ``N``), which read as classes
+# - names in single backticks that are a parameter or a variable, not an object
+# - classes of other packages that publish no object inventory (spatialgeometry,
+#   bdsim) and the internal mixin and status classes that are shown as a base
+#   class but not documented
+nitpicky = False  # set True, or use ``sphinx-build -n``, to check cross-references
+
+nitpick_ignore_regex = [
+    (r"py:(class|obj)", r"(ndarray|array_like|optional|callable|float np\.ndarray|\d+-tuple|\d+|[A-Z]|[a-z]|tol=.*|tol|Tep|q0|E|jtype|SE3|SO3|SE2|SO2)"),
+    (r"py:(class|data|obj)", r"typing\..*"),
+    (r"py:class", r"(spatialgeometry|bdsim|sympy\.core)\..*"),
+    (r"py:(class|func|meth)", r"(spatialmath\.(SE3|base\..*)|scipy\.interpolate\.interp1d|interp1d|SceneNode|dataclasses\..*)"),
+    # module constants and private helpers named in a docstring, not documented
+    (r"py:(data|meth|func)", r"([A-Z_]+_STYLE|_[a-z_]+|Link\.\w+|roboticstoolbox\.Link\..*)"),
+    # a description of a type, or of an instance, rather than a class
+    (r"py:class", r".* (instance|np\.ndarray)|namedtuples|scalar|Sym|etb\..*|:param"),
+    (r"py:exc", r"NoPathError"),
+    (r"py:(class|obj)", r"Robot|VehicleDriver|VehicleAnimation|Block|Plug|LandmarkMap|EKFLog|roboticstoolbox\.mobile\.EKF\.EKFLog|roboticstoolbox\.ets\._ET\.BaseET|numpy\._typing\..*"),
+    (r"py:class", r"roboticstoolbox\.[A-Za-z.]*(Mixin|Status|HasWorkspace|Connector|EllipsePlot|LinkType|Gripper|BaseRobot|TrChainToken)"),
+]
 
 
 # -------- Options Napoleon ----------------------------------------------------------#
@@ -171,16 +227,69 @@ intersphinx_mapping = {
 # the documentation
 napoleon_include_special_with_doc = True
 
-napoleon_custom_sections = ["Synopsis"]
+# Napoleon is still needed: tools/urdf/utils.py and urdf.py have genuine
+# NumPy-style docstrings (vendored/adapted from an external URDF library)
+# that depend on it. Everywhere else uses explicit reST fields directly.
+# Bare NumPy-style section headers (Note, Examples, See Also, ...) mixed
+# into otherwise-reST docstrings should use explicit directives
+# (.. rubric:: Notes, etc.) instead — Napoleon's heuristic recognition of
+# those bare headers can conflict with sphinx_autodoc_typehints (see
+# https://github.com/petercorke/robotics-toolbox-python/issues/574).
 
 # -------- Options AutoSummary -------------------------------------------------------#
 
 # autodoc_default_flags = ["members"]
-autosummary_generate = True
+
+# -------- rst_epilog: shared substitutions available in all RST/docstrings ------#
+
+rst_epilog = """
+.. role:: raw-html(raw)
+   :format: html
+.. |BlockOptions| replace:: :raw-html:`<a href="https://petercorke.github.io/bdsim/internals.html?highlight=block%20__init__#bdsim.Block.__init__">common Block options</a>`
+.. |GraphicsBlockOptions| replace:: :raw-html:`<a href="https://petercorke.github.io/bdsim/internals.html?highlight=graphicsblock%20__init__#bdsim.GraphicsBlock.__init__">common GraphicsBlock options</a>`
+.. |ikargs| replace:: additional keyword arguments accepted by the underlying numerical IK solver -- ``ilimit``, ``slimit``, ``tol``, ``mask``, ``joint_limits``, ``seed``, ``verbose``, ``k``, ``method``, ``kq``, ``km`` -- see :meth:`~roboticstoolbox.ETS.ikine_LM` for details of each
+"""
+
+# -------- Suppress common noisy warnings ----------------------------------------#
+
+# Suppress "more than one target found" for short/common attribute names like
+# n, m, robot, symbolic that appear across many classes, and duplicate-citation
+# warnings for references (e.g. Yoshikawa85) defined in both a narrative page
+# and a docstring pulled in from two classes.
+#
+# Note: "duplicate object description" (autodoc members documented both
+# inline and via a separate IK/stubs/ page) is a different warning class
+# with no type/subtype tag at all, so it can't be suppressed here — it's
+# fixed at the source instead, via :no-index: in
+# _templates/autosummary/method.rst.
+suppress_warnings = [
+    "ref.python",  # ambiguous cross-references (multiple targets for 'n', 'm', etc.)
+    "ref.citation",  # duplicate citations (Yoshikawa85 etc in both arm_*.rst and docstrings)
+    "codeautolink.match_block",
+    "codeautolink.match_name",
+    "config.cache",  # codeautolink_custom_blocks holds function refs, not picklable
+]
+
+# -------- sphinx-codeautolink options --------------------------------------------#
+
+codeautolink_custom_blocks = {
+    "pycon": clean_pycon,
+    "ipython": clean_ipython,
+    "ipython3": clean_ipython,
+}
+# Ensure pycon (Python console) blocks are included in the autolink search.
+codeautolink_search_css_classes = ["highlight-python", "highlight-pycon"]
+
+# -------- sphinx-copybutton options ----------------------------------------------#
+# Strip interactive prompts (Python and shell) when users copy code snippets.
+
+copybutton_prompt_text = r">>> |\.\.\. |\$ "
+copybutton_prompt_is_regexp = True
+copybutton_only_copy_prompt_lines = False
+copybutton_remove_prompts = True
 
 # -------- Options favicon -------------------------------------------------------#
 
-html_static_path = ["_static"]
 # create favicons online using https://favicon.io/favicon-converter/
 favicons = [
     {
@@ -204,13 +313,13 @@ favicons = [
     {
         "rel": "android-chrome",
         "sizes": "192x192",
-        "static-file": "android-chrome-192x192.png ",
+        "static-file": "android-chrome-192x192.png",
         "type": "image/png",
     },
     {
         "rel": "android-chrome",
         "sizes": "512x512",
-        "static-file": "android-chrome-512x512.png ",
+        "static-file": "android-chrome-512x512.png",
         "type": "image/png",
     },
 ]

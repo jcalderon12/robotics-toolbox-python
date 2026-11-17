@@ -4,7 +4,7 @@ name = "roboticstoolbox-python"
 
 description = "A Python library for robotics education and research"
 
-version = "1.1.1"
+version = "1.5.0"
 
 authors = [
     { name = "Jesse Haviland", email = "j.haviland@qut.edu.au" },
@@ -12,24 +12,26 @@ authors = [
 ]
 
 dependencies = [
-    "numpy>=1.17.4",
-    "spatialmath-python>=1.1.5",
-    "spatialgeometry>=1.0.0",
-    "pgraph-python",
+    "numpy",
+    "spatialmath-python>=1.1.19",
+    "spatialgeometry>=1.4.0",
+    "pgraph-python>=1.0.0",
     "scipy",
     "matplotlib",
     "ansitable",
-    "swift-sim>=1.0.0",
-    "rtb-data @ git+https://github.com/jcalderon12/robotics-toolbox-python.git#subdirectory=rtb-data",
+    "rtb-data>=2.0",
     "progress",
     "typing_extensions",
+    "colored>2.0.0",
+    "xacrodoc",
+    "robot_descriptions>=2.0,<3.0",
 ]
 
 license = { file = "LICENSE" }
 
 readme = "README.md"
 
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 
 keywords = [
     "python",
@@ -54,150 +56,353 @@ classifiers = [
     # Pick your license as you wish (should match "license" above)
     "License :: OSI Approved :: MIT License",
     # Specify the Python versions you support here.
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 
 
 [project.urls]
-homepage = "https://github.com/jcalderon12/robotics-toolbox-python"
-repository = "https://github.com/jcalderon12/robotics-toolbox-python"
+homepage = "https://petercorke.github.io/robotics-toolbox-python/"
+documentation = "https://petercorke.github.io/robotics-toolbox-python/"
+repository = "https://github.com/petercorke/robotics-toolbox-python"
 
 
 [project.optional-dependencies]
 
-collision = ["pybullet"]
+swift = ["swift-sim>=2.0.0", "websockets"]
+
+collision = ["coal; sys_platform != 'win32'", "trimesh"]
+
+qp = ["qpsolvers", "quadprog"]
+
+# analytic inverse kinematics: derive the equations (SymPy), much faster with FLINT
+ik = ["sympy", "python-flint"]
+
+tool = ["ipython", "pygments"]
+
+# the block-diagram blocks in roboticstoolbox.blocks, which are bdsim blocks.  Neither
+# package requires the other: 1.5.0 is the first bdsim with the block parameter registry
+blocks = ["bdsim>=1.5.0"]
+
+all = [
+    "swift-sim>=2.0.0",
+    "websockets",
+    "qpsolvers",
+    "quadprog",
+    "coal; sys_platform != 'win32'",
+    "trimesh",
+    "ipython",
+    "pygments",
+]
 
 dev = [
-    "black",
     "pytest",
     "pytest-cov",
-    "flake8",
+    "pytest-timeout",
     "pyyaml",
     "sympy",
     "qpsolvers",
     "quadprog",
-    "pybullet",
-    "bdsim",
+    "bdsim>=1.5.0",
+    "ruff",
+    "coal; sys_platform != 'win32'",
+    "trimesh",
+    "nbmake",
+    "ipympl",
 ]
+
+# Backward-compatible alias; notebook tooling is included in "dev".
+nb = ["nbmake"]
 
 docs = [
     "sphinx",
     "sphinx_rtd_theme",
-    "sphinx-autorun",
+    "sphinx-pyrunblock",
     "sphinx_autodoc_typehints",
     "sphinx-favicon",
+    "sphinxcontrib-bibtex",
+    "sphinx-copybutton",
+    "sphinx-codeautolink",
 ]
 
 
 [project.scripts]
 
-eigdemo = "roboticstoolbox.examples.eigdemo:main"
-tripleangledemo = "roboticstoolbox.examples.tripleangledemo:main"
-twistdemo = "roboticstoolbox.examples.twistdemo:main"
+eigdemo = "roboticstoolbox.demo.eigdemo:main"
+tripleangledemo = "roboticstoolbox.demo.tripleangledemo:main"
+twistdemo = "roboticstoolbox.demo.twistdemo:main"
 rtbtool = "roboticstoolbox.bin.rtbtool:main"
 
 
 [build-system]
 
-requires = ["setuptools", "oldest-supported-numpy"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.9", "numpy", "nanobind>=2"]
+build-backend = "scikit_build_core.build"
 
 
-[tool.setuptools]
-
-packages = [
-    "roboticstoolbox",
-    "roboticstoolbox.backends",
-    "roboticstoolbox.backends.PyPlot",
-    "roboticstoolbox.backends.swift",
-    "roboticstoolbox.bin",
-    "roboticstoolbox.blocks",
-    "roboticstoolbox.examples",
-    "roboticstoolbox.bin",
-    "roboticstoolbox.robot",
-    "roboticstoolbox.mobile",
-    "roboticstoolbox.models",
-    "roboticstoolbox.models.DH",
-    "roboticstoolbox.models.ETS",
-    "roboticstoolbox.models.URDF",
-    "roboticstoolbox.tools",
-    "roboticstoolbox.tools.urdf",
-    "roboticstoolbox.tools.xacro",
+[tool.scikit-build]
+wheel.packages = ["src/roboticstoolbox"]
+sdist.include = [
+    "src/roboticstoolbox",
+    "tests",
+    "CMakeLists.txt",
+    "README.md",
+    "LICENSE",
 ]
+sdist.exclude = ["rtb-data/**"]
+
+# Set RTB_PURE_WHEEL=1 to build a genuinely pure-Python wheel: skips both
+# compiled extensions (CMakeLists.txt's RTB_BUILD_EXTENSIONS option) and
+# forces the wheel tag to py3-none-any (wheel.platlib=false — confirmed by
+# reading scikit-build-core's own wheel_tag.py: root_is_purelib forces
+# plats=["any"], abi="none", pyvers=["py3"]). Used for the Pyodide/
+# JupyterLite build (see release.yml's build_pyodide job) -- both _fknm_c
+# and _frne_c have complete, tested pure-Python fallbacks (fknm.py/frne.py,
+# tests/test_fknm_fallback.py), so there's nothing missing at runtime.
+# pip always prefers a platform-specific compiled wheel over py3-none-any
+# when both are published (packaging.tags ranks specific tags higher) --
+# this wheel is only ever selected where no compiled wheel exists, i.e.
+# Pyodide today.
+[[tool.scikit-build.overrides]]
+if.env.RTB_PURE_WHEEL = true
+wheel.platlib = false
+cmake.define.RTB_BUILD_EXTENSIONS = "OFF"
 
 
-[tool.black]
-
+[tool.ruff]
 line-length = 88
-target_version = ['py37']
-args = '--experimental-string-processing'
+exclude = [".git", "build", "dist", "docs", ".venv", ".tox"]
 
-include = '\.pyi?$'
-exclude = '''
+[tool.ruff.lint]
+ignore = ["F821", "E741", "E203"]
 
-(
-  /(
-      \.eggs         # exclude a few common directories in the
-    | \.git          # root of the project
-    | \.hg
-    | \.mypy_cache
-    | \.tox
-    | \.venv
-    | \.github
-    | _build
-    | buck-out
-    | build
-    | dist
-    | docs
-  )/
-)
-'''
-
-
-[tool.flake8]
-
-ignore = ['F821', 'W503', 'E741']
-max-line-length = 88
-extend-ignore = 'E203'
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 
 [tool.cibuildwheel]
 
-# Will cause the wheel to be installed with `pip install <wheel_file>[dev,collision]`
-# test-extras = ["dev", "collision"]
-# test-requires = "pytest"
-# test-command = "pytest {project}/tests"
-
-manylinux-x86_64-image = "manylinux2014"
-manylinux-aarch64-image = "manylinux2014"
-
-# Build CPython 3.7 - 3.11
-build = ["cp37-*", "cp38-*", "cp39-*", "cp310-*", "cp311-*"]
-
-# Disable building musllinux wheels on all platforms
-skip = ["pp*", "*musllinux*"]
-
+build = ["cp310-*", "cp311-*", "cp312-*", "cp313-*", "cp314-*"]
+skip = ["*musllinux*"]
 
 [tool.cibuildwheel.macos]
-
-# Build `x86_64` and `arm64` wheels on an Intel runner.
-# Note that the `arm64` wheel cannot be tested in this configuration.
-archs = ["x86_64", "arm64"]
+archs = ["auto"] # arm64 only from macos-latest; x86_64 EOL
 
 [tool.cibuildwheel.linux]
-
-# On an Linux Intel runner with qemu installed, build Intel and ARM wheels
-archs = ["x86_64", "aarch64"]
+archs = [
+    "auto",
+] # native arch only; arm64 uses ubuntu-24.04-arm runner (no QEMU)
 
 [tool.cibuildwheel.windows]
+archs = ["AMD64"]
 
-# On an Windows Intel runner build wheels
-archs = ["AMD64", "x86"]
+# No [tool.cibuildwheel.pyodide] section -- the wasm/Pyodide wheel is no
+# longer built via cibuildwheel's Pyodide platform (cross-compiling for a
+# specific Emscripten/Pyodide ABI version was the whole source of the
+# JSPI/tag-matching saga, see git history on this file and release.yml).
+# It's built as an ordinary pure-Python wheel on a normal runner instead --
+# see the RTB_PURE_WHEEL override above and release.yml's build_pyodide job.
 
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+markers = [
+    "slow: takes more than a few seconds; run by the coverage job, not by the others",
+]
+filterwarnings = [
+    "ignore:FigureCanvasAgg is non-interactive:UserWarning",
+]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src"
+files = ["src/roboticstoolbox"]
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+# Not annotated, and not going to be: unmaintained sketches that need hardware
+# and have no tests.  Annotating them would hide, not fix, their problems.
+[[tool.mypy.overrides]]
+module = [
+    "roboticstoolbox.backends.Dynamixel.*",
+    "roboticstoolbox.backends.ROS.*",
+]
+ignore_errors = true
+
+# Modules that are fully annotated: every function needs its annotations.
+# Add a module here when it is done.
+[[tool.mypy.overrides]]
+module = [
+    "roboticstoolbox.mobile.Animations",
+    "roboticstoolbox.mobile.drivers",
+    "roboticstoolbox.mobile.Vehicle",
+    "roboticstoolbox.mobile.OccGrid",
+    "roboticstoolbox.mobile.landmarkmap",
+    "roboticstoolbox.mobile.PlannerBase",
+    "roboticstoolbox.mobile.Bug2",
+    "roboticstoolbox.mobile.DistanceTransformPlanner",
+    "roboticstoolbox.mobile.PRMPlanner",
+    "roboticstoolbox.mobile.QuinticPolyPlanner",
+    "roboticstoolbox.mobile.CurvaturePolyPlanner",
+    "roboticstoolbox.mobile.RRTPlanner",
+    "roboticstoolbox.mobile.LatticePlanner",
+    "roboticstoolbox.mobile.DubinsPlanner",
+    "roboticstoolbox.mobile.ReedsSheppPlanner",
+    "roboticstoolbox.mobile.DstarPlanner",
+    "roboticstoolbox.mobile.PoseGraph",
+    "roboticstoolbox.mobile.EKF",
+    "roboticstoolbox.mobile.sensors",
+    "roboticstoolbox.mobile.ParticleFilter",
+    "roboticstoolbox.backends",
+    "roboticstoolbox.backends.Connector",
+    "roboticstoolbox.backends.swift",
+    "roboticstoolbox.backends.PyPlot.PyPlot",
+    "roboticstoolbox.backends.PyPlot.PyPlot2",
+    "roboticstoolbox.backends.PyPlot.RobotPlot",
+    "roboticstoolbox.backends.PyPlot.RobotPlot2",
+    "roboticstoolbox.backends.PyPlot.EllipsePlot",
+    "roboticstoolbox.blocks.arm",
+    "roboticstoolbox.blocks.mobile",
+    "roboticstoolbox.blocks.spatial",
+    "roboticstoolbox.blocks.uav",
+    "roboticstoolbox.blocks.quad_model",
+    "roboticstoolbox.tools.Ticker",
+    "roboticstoolbox.tools.data",
+    "roboticstoolbox.tools.jsingu",
+    "roboticstoolbox.tools.null",
+    "roboticstoolbox.tools.numerical",
+    "roboticstoolbox.tools.p_servo",
+    "roboticstoolbox.tools.params",
+    "roboticstoolbox.tools.plot",
+    "roboticstoolbox.tools.trchain",
+    "roboticstoolbox.tools.urdf.urdf",
+    "roboticstoolbox.tools.urdf.utils",
+    "roboticstoolbox.demo.eigdemo",
+    "roboticstoolbox.demo.tripleangledemo",
+    "roboticstoolbox.demo.twistdemo",
+    "roboticstoolbox.bin._bintools",
+    "roboticstoolbox.bin.rtbtool",
+    "roboticstoolbox.models.DH.AL5D",
+    "roboticstoolbox.models.DH.Ball",
+    "roboticstoolbox.models.DH.Baxter",
+    "roboticstoolbox.models.DH.Cobra600",
+    "roboticstoolbox.models.DH.Coil",
+    "roboticstoolbox.models.DH.Hyper",
+    "roboticstoolbox.models.DH.Hyper3d",
+    "roboticstoolbox.models.DH.IRB140",
+    "roboticstoolbox.models.DH.Jaco",
+    "roboticstoolbox.models.DH.KR5",
+    "roboticstoolbox.models.DH.LWR4",
+    "roboticstoolbox.models.DH.Mico",
+    "roboticstoolbox.models.DH.Orion5",
+    "roboticstoolbox.models.DH.P8",
+    "roboticstoolbox.models.DH.Panda",
+    "roboticstoolbox.models.DH.Planar2",
+    "roboticstoolbox.models.DH.Planar3",
+    "roboticstoolbox.models.DH.Puma560",
+    "roboticstoolbox.models.DH.Sawyer",
+    "roboticstoolbox.models.DH.Stanford",
+    "roboticstoolbox.models.DH.TwoLink",
+    "roboticstoolbox.models.DH.UR10",
+    "roboticstoolbox.models.DH.UR3",
+    "roboticstoolbox.models.DH.UR5",
+    "roboticstoolbox.models.DH.Uprighttl",
+    "roboticstoolbox.models.ETS.GenericSeven",
+    "roboticstoolbox.models.ETS.Planar2",
+    "roboticstoolbox.models.ETS.Planar_Y",
+    "roboticstoolbox.models.URDF.AL5D",
+    "roboticstoolbox.models.URDF.Fetch",
+    "roboticstoolbox.models.URDF.Frankie",
+    "roboticstoolbox.models.URDF.FrankieOmni",
+    "roboticstoolbox.models.URDF.Jaco",
+    "roboticstoolbox.models.URDF.KinovaGen3",
+    "roboticstoolbox.models.URDF.LBR",
+    "roboticstoolbox.models.URDF.PR2",
+    "roboticstoolbox.models.URDF.Panda",
+    "roboticstoolbox.models.URDF.Puma560",
+    "roboticstoolbox.models.URDF.UR10",
+    "roboticstoolbox.models.URDF.UR3",
+    "roboticstoolbox.models.URDF.UR5",
+    "roboticstoolbox.models.URDF.URDFRobot",
+    "roboticstoolbox.models.URDF.Valkyrie",
+    "roboticstoolbox.models.URDF.YuMi",
+    "roboticstoolbox.models.URDF.px100",
+    "roboticstoolbox.models.URDF.px150",
+    "roboticstoolbox.models.URDF.rx150",
+    "roboticstoolbox.models.URDF.rx200",
+    "roboticstoolbox.models.URDF.vx300",
+    "roboticstoolbox.models.URDF.vx300s",
+    "roboticstoolbox.models.URDF.wx200",
+    "roboticstoolbox.models.URDF.wx250",
+    "roboticstoolbox.models.URDF.wx250s",
+    "roboticstoolbox.models.catalog",
+    "roboticstoolbox.ets.ET",
+    "roboticstoolbox.ets.ET2",
+    "roboticstoolbox.ets.ETS",
+    "roboticstoolbox.ets.ETS2",
+    "roboticstoolbox.ets._ET",
+    "roboticstoolbox.ets._ETS",
+    "roboticstoolbox.ets.fknm",
+    "roboticstoolbox.models.ETS.Frankie",
+    "roboticstoolbox.models.ETS.Omni",
+    "roboticstoolbox.models.ETS.Panda",
+    "roboticstoolbox.models.ETS.Puma560",
+    "roboticstoolbox.models.ETS.XYPanda",
+    "roboticstoolbox.robot.BaseRobot",
+    "roboticstoolbox.robot.DHLink",
+    "roboticstoolbox.robot.DHRobot",
+    "roboticstoolbox.robot.Dynamics",
+    "roboticstoolbox.robot.ELink",
+    "roboticstoolbox.robot.ERobot",
+    "roboticstoolbox.robot.Gripper",
+    "roboticstoolbox.robot.IK",
+    "roboticstoolbox.robot.Link",
+    "roboticstoolbox.robot.PoERobot",
+    "roboticstoolbox.robot.Robot",
+    "roboticstoolbox.robot.RobotKinematics",
+    "roboticstoolbox.robot.RobotPlottingMPL",
+    "roboticstoolbox.robot.RobotProto",
+    "roboticstoolbox.robot.frne",
+    "roboticstoolbox.robot",
+]
+disallow_untyped_defs = true
+
+# The to-do list for the typing pass.  A module is listed here because it still
+# has type errors; fix a module, delete its line, and mypy then holds it to
+# zero.  The list should only ever get shorter.  A module that is not listed
+# is checked, and must stay clean.
+[[tool.mypy.overrides]]
+module = [
+    "roboticstoolbox.tools.DHFactor",
+    "roboticstoolbox.robot.DHFactor",
+]
+ignore_errors = true
+
+# CI installs the package and runs the tests against the installed copy, so coverage
+# measures it by name.  [tool.coverage.paths] maps the installed files back to src/,
+# so that the report, and Codecov, use the paths of the repository.
 [tool.coverage.run]
-omit = ["roboticstoolbox/examples/*", "test_*.py"]
+source = ["roboticstoolbox"]
+relative_files = true
+omit = ["src/roboticstoolbox/demo/*", "*/roboticstoolbox/demo/*", "test_*.py"]
+
+[tool.coverage.paths]
+source = ["src/roboticstoolbox", "*/site-packages/roboticstoolbox"]
+
+# Left out of the report, since they have no tests or cannot be measured
+[tool.coverage.report]
+omit = [
+    # sketches for hardware, with no tests, that nobody maintains
+    "*/roboticstoolbox/backends/Dynamixel/*",
+    "*/roboticstoolbox/backends/ROS/*",
+    # the unfinished port of DHFactor, which nothing imports
+    "*/roboticstoolbox/robot/DHFactor.py",
+    "*/roboticstoolbox/tools/DHFactor.py",
+    # the command-line tools run in a subprocess in the tests, which coverage does not trace
+    "*/roboticstoolbox/bin/*",
+]

@@ -8,29 +8,26 @@ import numpy as np
 import roboticstoolbox as rtb
 from roboticstoolbox import Link, ETS, ET, Robot
 from spatialmath import SE3
+import spatialgeometry as sg
 import unittest
 from copy import deepcopy
-from swift import Swift
 
 from roboticstoolbox.robot.Robot import BaseRobot
 
 
 class TestBaseRobot(unittest.TestCase):
     def test_init(self):
+        from roboticstoolbox.models.URDF.URDFRobot import URDF_read
 
-        links, name, urdf_string, urdf_filepath = rtb.Robot.URDF_read(
-            "franka_description/robots/panda_arm_hand.urdf.xacro"
-        )
+        links, name, urdf_filepath = URDF_read("panda")
 
         robot = rtb.Robot(
             links,
             name=name,
             manufacturer="Franka Emika",
             gripper_links=links[9],
-            urdf_string=urdf_string,
-            urdf_filepath=urdf_filepath,
         )
-
+        robot._urdf_filepath = str(urdf_filepath) if urdf_filepath else ""
         robot.grippers[0].tool = SE3(0, 0, 0.1034)
 
     def test_init2(self):
@@ -102,6 +99,17 @@ class TestBaseRobot(unittest.TestCase):
         self.assertTrue(robot2._hasdynamics)
         self.assertTrue(robot._hasgeometry)
         self.assertTrue(robot._hascollision)
+
+    def test_hasgeometry_planar(self):
+        # Link2 is a BaseLink, not a Link: a planar robot whose links have
+        # geometry must still report it, as a bool
+        geom = [sg.Cuboid([1, 1, 1])]
+        robot = rtb.Robot2([rtb.Link2(rtb.ETS2(rtb.ET2.R()), geometry=geom)])
+        self.assertIs(robot._hasgeometry, True)
+        self.assertTrue(robot.hasgeometry)
+
+        bare = rtb.Robot2(rtb.ETS2(rtb.ET2.R()))
+        self.assertIs(bare._hasgeometry, False)
 
     def test_init10(self):
 
@@ -496,6 +504,18 @@ class TestBaseRobot(unittest.TestCase):
 
         self.assertEqual(end.name, "r_gripper")
 
+    def test_yumi_gripper_parents(self):
+        # r_gripper/l_gripper must sit under their own arm's final link, not
+        # the other arm's -- previously swapped, so end='r_gripper' silently
+        # solved for the left arm and vice versa.
+        r = rtb.models.YuMi()
+
+        r_gripper = r._getlink("r_gripper")
+        l_gripper = r._getlink("l_gripper")
+
+        self.assertEqual(r_gripper.parent.name, "gripper_r_base")
+        self.assertEqual(l_gripper.parent.name, "gripper_l_base")
+
     def test_limits2(self):
         r = rtb.models.Panda()
 
@@ -623,9 +643,84 @@ class TestBaseRobot(unittest.TestCase):
 
         be = r._get_graphical_backend()
 
-        self.assertTrue(isinstance(be, Swift))
+        # swift is optional; default backend falls back to PyPlot if unavailable.
+        self.assertIn(type(be).__name__, ["Swift", "PyPlot"])
 
     def test_teach(self):
         robot = rtb.models.ETS.Panda()
         e = robot.teach(q=None, block=False, vellipse=True, fellipse=True)
         e.close()
+
+    def test_teach_swift(self):
+        try:
+            import swift  # noqa: F401
+        except ImportError:
+            self.skipTest("swift-sim not installed")
+
+        import os
+        from unittest.mock import patch
+
+        robot = rtb.models.Panda()
+        with patch.dict(os.environ, {"SWIFT_HEADLESS": "1"}):
+            e = robot.teach(q=robot.qr, block=False, backend="swift")
+        try:
+            self.assertEqual(type(e).__name__, "Swift")
+            e.step(0.05)
+            nt.assert_almost_equal(e.swift_objects[0].q, robot.qr)
+        finally:
+            e.close()
+
+    def test_teach_default_backend_resolves_to_swift(self):
+        # rtb.models.Panda() has hasgeometry=True, so teach() with no
+        # explicit backend= should resolve to Swift now that
+        # supports_teach=True -- matches plot()'s existing default, but
+        # is a real behaviour change (used to only ever be PyPlot/PyPlot2,
+        # since Swift always raised TypeError before this).
+        try:
+            import swift  # noqa: F401
+        except ImportError:
+            self.skipTest("swift-sim not installed")
+
+        import os
+        from unittest.mock import patch
+
+        robot = rtb.models.Panda()
+        self.assertTrue(robot.hasgeometry)
+        with patch.dict(os.environ, {"SWIFT_HEADLESS": "1"}):
+            e = robot.teach(q=robot.qr, block=False)
+        try:
+            self.assertEqual(type(e).__name__, "Swift")
+        finally:
+            e.close()
+
+    def test_teach_swift_writes_final_q_back_to_robot(self):
+        # PyPlot's teach() mutates robot.q throughout its own session, so
+        # a caller naturally finds the final taught pose in robot.q once
+        # teach() returns. Swift's AssemblyHandle deliberately never
+        # mirrors handle.q into robot.q *during* a session -- but
+        # _add_teach_panel() must still write it back once, at the point
+        # the session ends (block=True), so callers see the same thing
+        # regardless of backend.
+        try:
+            from roboticstoolbox.backends.swift import Swift
+        except ImportError:
+            self.skipTest("swift-sim not installed")
+
+        import os
+        from unittest.mock import patch
+
+        robot = rtb.models.Panda()
+
+        # block=True's own step loop (env.run()) would run forever in
+        # headless mode (nothing to disconnect from) -- not what this
+        # test cares about, only that the write-back after it runs.
+        # Patching it to a no-op isolates that.
+        with patch.object(Swift, "run", lambda self: None):
+            with patch.dict(os.environ, {"SWIFT_HEADLESS": "1"}):
+                e = robot.teach(q=robot.qz, block=True, backend="swift")
+        try:
+            handle = e.swift_objects[0]
+            nt.assert_almost_equal(robot.q, handle.q)
+            nt.assert_almost_equal(robot.q, robot.qz)
+        finally:
+            e.close()

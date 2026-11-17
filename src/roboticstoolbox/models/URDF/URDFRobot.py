@@ -1,0 +1,631 @@
+"""
+URDF/xacro loading infrastructure for robot models.
+
+Provides:
+  - URDF_file(path)   — parse a URDF or xacro file, return (elinks, name)
+  - URDF_read(path)   — same but returns (elinks, name, None, None) for
+                        backward-compat with complex models that manipulate
+                        the link list before calling Robot.__init__
+  - URDFRobot         — base class for simple URDF-loaded robot models
+"""
+
+from __future__ import annotations
+
+import importlib
+import re
+import sys
+import tempfile
+import warnings
+import xml.parsers.expat
+from pathlib import Path
+from typing import Any, Callable, TextIO
+
+import numpy as np
+from spatialmath import SE3
+from spatialmath.base import angvec2r, tr2rpy, unitvec_norm
+from xacrodoc import XacroDoc, packages
+
+from roboticstoolbox.tools.types import NDArray
+
+try:
+    from xacro import XacroException
+except ImportError:  # pragma nocover
+
+    class XacroException(Exception):  # type: ignore[no-redef]
+        pass
+
+
+try:
+    from xacrodoc.packages import PackageNotFoundError
+except ImportError:  # pragma nocover
+
+    class PackageNotFoundError(Exception):  # type: ignore[no-redef]
+        pass
+
+
+from roboticstoolbox.ets.ET import ET
+from roboticstoolbox.ets.ETS import ETS
+from roboticstoolbox.robot.Link import Link
+from roboticstoolbox.robot.Robot import Robot
+from roboticstoolbox.tools.urdf import URDF, URDFError
+
+
+def _register_rd_packages(urdf_path: Path) -> None:
+    """Register all package:// names referenced in a URDF with the xacrodoc cache.
+
+    Scans the URDF text for every ``package://NAME/`` reference, then walks up
+    the directory tree from the file to find and register the matching ancestor
+    directory for each name.  This handles arbitrarily nested cache layouts
+    (e.g. ``example-robot-data/robots/panda_description/urdf/panda.urdf``).
+    """
+    import re
+
+    pkg_names = set(re.findall(r"package://([^/]+)/", urdf_path.read_text()))
+    for parent in urdf_path.parents:
+        if parent.name in pkg_names:
+            packages.update_package_cache({parent.name: str(parent)})
+            pkg_names.discard(parent.name)
+        if not pkg_names:
+            break
+
+
+_RD_URL = "https://github.com/robot-descriptions/robot_descriptions.py"
+
+
+def _rd_link() -> str:
+    """Render "robot_descriptions" as a clickable terminal hyperlink (OSC 8).
+
+    Terminals that don't understand OSC 8 just display the plain text, so
+    this degrades safely everywhere.
+    """
+    return f"\033]8;;{_RD_URL}\033\\robot_descriptions\033]8;;\033\\"
+
+
+def _find_rd_rename(robot_name: str, tried: list[str]) -> str | None:
+    """Look for another robot_descriptions entry for the same robot under a
+    name we didn't try, e.g. an alternate/newer naming convention.
+
+    Returns the matching name, or None if robot_descriptions has nothing
+    registered for ``robot_name`` at all.
+    """
+    import robot_descriptions
+
+    prefix = f"{robot_name}_"
+    for key in robot_descriptions.DESCRIPTIONS:
+        if key not in tried and key.startswith(prefix):
+            return key
+    return None
+
+
+def _load_rd_module(robot_name: str) -> Any:
+    """Import the robot_descriptions submodule for ``robot_name``, trying the
+    current name first and falling back to older/newer naming schemes.
+
+    robot_descriptions has renamed some entries over time (e.g. ``ur5_description``
+    -> ``ur5_official_description``); trying alternates here means callers and
+    model classes don't need to track that migration themselves.
+    """
+    if "_mj_" in robot_name:
+        raise ValueError(
+            f"Toolbox uses {_rd_link()} to provide URDF robot models. The "
+            f'requested model named "{robot_name}" is a MuJoCo model not a '
+            "URDF model."
+        )
+
+    # robot_descriptions clones a git repository (via GitPython, which shells
+    # out to a real git binary) the first time a given model is imported.
+    # Pyodide/JupyterLite has no subprocess execution and no git binary, so
+    # this always fails there -- not a bug, an environment limitation.
+    # Checked up front, before the candidates loop below, rather than caught
+    # per-attempt: GitPython's failure in this sandbox surfaces as a plain
+    # ImportError (message: "emscripten does not support processes"), which
+    # the loop's `except ImportError` treats as "this candidate name doesn't
+    # exist, try the next one" -- so after exhausting every candidate it fell
+    # through to a misleading "model not found"/"renamed" error instead of
+    # this one. The outcome here is deterministic regardless of which
+    # candidate name is tried, so there is nothing to gain by attempting the
+    # loop at all on this platform.
+    if sys.platform == "emscripten":
+        raise ValueError(
+            f"Toolbox uses {_rd_link()} to provide URDF robot models, "
+            "which clones a git repository on first use. That isn't "
+            "possible in this browser (Pyodide/JupyterLite) sandbox -- "
+            f'this is an expected limitation loading "{robot_name}" '
+            "here, not a bug. Try a DH- or ETS-based model instead "
+            "(e.g. rtb.models.DH.Panda()), or run this notebook in a "
+            "regular Python environment to use robot_descriptions-"
+            "backed models."
+        )
+
+    candidates = [f"{robot_name}_description", f"{robot_name}_official_description"]
+    last_error: ImportError | None = None
+    for candidate in candidates:
+        try:
+            with warnings.catch_warnings():
+                # Deprecation notices name "robot_descriptions" directly, which
+                # is an implementation detail users of roboticstoolbox never
+                # opted into seeing.
+                warnings.simplefilter("ignore", FutureWarning)
+                return importlib.import_module(f"robot_descriptions.{candidate}")
+        except ImportError as e:
+            last_error = e
+            continue
+
+    renamed_to = _find_rd_rename(robot_name, candidates)
+    if renamed_to is not None:
+        raise ValueError(
+            f"Toolbox uses {_rd_link()} to provide URDF robot models. The "
+            f'requested model named "{robot_name}" is now named "{renamed_to}".'
+        ) from last_error
+
+    raise ValueError(
+        f"Toolbox uses {_rd_link()} to provide URDF robot models. The "
+        f'requested model named "{robot_name}" can not be found.'
+    ) from last_error
+
+
+def _load_urdf_from_RD(robot_name: str) -> tuple[Path, dict | None]:
+    """Fetch the URDF/xacro path from robot_descriptions and register its packages.
+
+    robot_descriptions models expose different path attributes depending on their
+    source format:
+      - URDF_PATH  — a precompiled, ready-to-parse URDF file (e.g. panda, pr2, gen2)
+      - XACRO_PATH — a xacro source that must be processed by xacrodoc
+                     (e.g. j2n6s200, ur5, kinova family)
+    Both are passed to XacroDoc.from_file(), which handles either format.
+
+    Some xacro-based models also expose ``XACRO_ARGS`` — substitution
+    values required to compile the file at all (e.g. Kinova Gen3's
+    ``{"dof": "7"}``, which selects the 6dof/7dof arm variant; several UR
+    and xArm variants have the same pattern). Returned alongside the path
+    so the caller can forward them to xacrodoc as ``subargs`` — without
+    them, xacro fails on an unresolved ``$(arg ...)``/property reference.
+    """
+    module = _load_rd_module(robot_name)
+
+    if hasattr(module, "URDF_PATH"):
+        urdf_path = Path(module.URDF_PATH)
+    elif hasattr(module, "XACRO_PATH"):
+        urdf_path = Path(module.XACRO_PATH)
+    else:
+        raise ValueError(
+            f"Robot model '{robot_name}' in robot_descriptions has neither "
+            "URDF_PATH nor XACRO_PATH."
+        )
+    _register_rd_packages(urdf_path)
+    return urdf_path, getattr(module, "XACRO_ARGS", None)
+
+
+def _xacro_location() -> list[str]:
+    """Describe where xacro was when it failed, like xacro's own print_location()."""
+    try:
+        import xacro
+    except ImportError:  # pragma nocover
+        return []
+
+    lines = []
+    msg = "when instantiating macro:"
+    for m in reversed(getattr(xacro, "macrostack", None) or []):
+        try:
+            name = m.body.getAttribute("name")
+            where = m.history[-1][-1] or "???"
+        except Exception:  # pragma nocover
+            continue
+        lines.append(f"{msg} {name} ({where})")
+        msg = "instantiated from:"
+
+    msg = "in file:" if lines else "when processing file:"
+    for f in reversed(getattr(xacro, "filestack", None) or []):
+        if f is None:
+            continue
+        lines.append(f"{msg} {f}")
+        msg = "included from:"
+    return lines
+
+
+def _reset_xacro_stacks() -> None:
+    """Clear xacro's module-level include/macro stacks.
+
+    xacro does not unwind them when it raises, and xacrodoc never resets
+    them, so without this a failure inside an include or macro would leave
+    stale "in file: / when instantiating macro:" lines that a later,
+    unrelated failure would then report.
+    """
+    try:
+        import xacro
+
+        xacro.init_stacks(None)
+    except (ImportError, AttributeError):  # pragma nocover
+        pass
+
+
+def _package_not_found(e: BaseException) -> PackageNotFoundError | None:
+    """Return the PackageNotFoundError at the root of a xacro error chain, if any.
+
+    xacro wraps the exceptions raised while evaluating ``$(find pkg)`` in one
+    or two layers of ``XacroException`` (each with the original in ``.exc``),
+    so the package failure has to be dug out to give the right hint.
+    """
+    cause = e
+    while isinstance(cause, XacroException) and getattr(cause, "exc", None):
+        cause = cause.exc
+    return cause if isinstance(cause, PackageNotFoundError) else None
+
+
+def _expand_xacro(source: str, expand: Callable[[], XacroDoc]) -> XacroDoc:
+    """Run one of the XacroDoc constructors, converting its failures to URDFError."""
+    _reset_xacro_stacks()
+    try:
+        return expand()
+    except xml.parsers.expat.ExpatError as e:
+        raise URDFError(
+            f"{source} is not well-formed XML: {e}",
+            stage="xml",
+            source=source,
+            line=getattr(e, "lineno", None),
+            column=getattr(e, "offset", None),
+            location=_xacro_location(),
+        ) from e
+    except (PackageNotFoundError, XacroException) as e:
+        missing = _package_not_found(e)
+        if missing is not None:
+            raise URDFError(
+                f"xacro could not find a package while processing {source}: "
+                f"{missing}. Register its directory with "
+                "xacrodoc.packages.update_package_cache() or pass it via "
+                "extra_packages=",
+                stage="xacro",
+                source=source,
+                location=_xacro_location(),
+            ) from e
+        raise URDFError(
+            f"xacro failed while processing {source}: {e}",
+            stage="xacro",
+            source=source,
+            location=_xacro_location(),
+        ) from e
+
+
+def _attach_expanded(err: URDFError, urdf_str: str, source: str) -> None:
+    """Point a URDF parse error at a saved copy of the expanded text it came from.
+
+    xacro output is what actually failed to parse, so line numbers only make
+    sense against it. Write it to a temp file, record the path on the error,
+    and when the error names an element (``name="..."``) but has no line yet,
+    look the element up in the text to give one.
+    """
+    err.source = source
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".urdf", prefix="rtb-expanded-", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(urdf_str)
+        err.expanded_file = f.name
+
+    if err.line is None:
+        for desc in err.elements:
+            m = re.search(r'name="([^"]*)"', desc)
+            if m is None:
+                continue
+            idx = urdf_str.find(f'name="{m.group(1)}"')
+            if idx >= 0:
+                err.line = urdf_str.count("\n", 0, idx) + 1
+            break
+
+
+def _parse_urdf(urdf_str: str, source: str = "<URDF text>") -> Any:
+    """Parse a URDF string into (elinks, name).
+
+    :raises URDFError: if the text is not well-formed XML or is not a valid
+        robot description; the error names the element, the line in a saved
+        copy of ``urdf_str``, and that copy's path
+    """
+    try:
+        urdf = URDF.loadstr(urdf_str, None)
+        return _links_from_urdf(urdf)
+    except URDFError as e:
+        _attach_expanded(e, urdf_str, source)
+        raise
+
+
+def _inertia_in_link_frame(
+    inertial: Any,
+) -> tuple[NDArray | None, NDArray | None]:
+    """Centre of mass and inertia tensor of a URDF link, in the link frame.
+
+    URDF gives the inertia tensor in the link's *inertial* frame, whose pose
+    relative to the link frame is ``<inertial><origin xyz rpy>``. The toolbox
+    wants the tensor about the centre of mass but with axes parallel to the
+    link frame (see :attr:`Link.I`), so rotate it: ``I_link = R I R^T``.
+    ``xyz`` is already the centre of mass in the link frame.
+
+    :param inertial: a parsed :class:`~roboticstoolbox.tools.urdf.Inertial`
+    :returns: ``(r, I)``, either of which is ``None`` when not given
+    """
+    origin = inertial.origin
+    r = None if origin is None else origin[:3, 3]
+
+    I = inertial.inertia
+    if I is not None and origin is not None:
+        R = origin[:3, :3]
+        I = R @ I @ R.T
+        I = 0.5 * (I + I.T)  # remove rounding asymmetry; Link.I checks to 1e-8
+    return r, I
+
+
+def _links_from_urdf(urdf: URDF) -> Any:
+    """Convert a parsed :class:`URDF` into (elinks, name)."""
+    elinks = []
+    elinkdict = {}
+
+    for link in urdf._links:
+        r, I = _inertia_in_link_frame(link.inertial)
+        elink = Link(name=link.name, m=link.inertial.mass, r=r, I=I)
+        elinks.append(elink)
+        elinkdict[link.name] = elink
+
+        # a visual without a shape, or with a mesh that cannot be found, is
+        # rejected when the URDF is parsed, so every visual here has an `ob`
+        elink.geometry = [v.geometry.ob for v in link.visuals]
+
+        if link.collisions:
+            shapes = []
+            for col in link.collisions:
+                try:
+                    ob = col.geometry.ob
+                except AttributeError:
+                    ob = None
+                if ob is not None:
+                    shapes.append(ob)
+            if not shapes:
+                raise RuntimeError(
+                    f"Collision geometry for link '{link.name}' failed to load. "
+                    "Ensure all package:// URIs are registered in the xacrodoc cache."
+                )
+            elink.collision = shapes
+
+    for joint in urdf._joints:
+        for role, link_name in (("parent", joint.parent), ("child", joint.child)):
+            if link_name not in elinkdict:
+                raise URDFError(
+                    f'joint "{joint.name}" refers to {role} link "{link_name}", '
+                    f"which is not defined (defined links: {', '.join(elinkdict)})",
+                    stage="urdf",
+                    element=f'<joint name="{joint.name}">',
+                )
+        childlink = elinkdict[joint.child]
+        parentlink = elinkdict[joint.parent]
+
+        childlink._parent = parentlink
+        childlink._joint_name = joint.name
+
+        trans = SE3(joint.origin).t
+        rot = joint.rpy
+
+        ets: Any
+        if np.count_nonzero(joint.axis) < 2:
+            ets = ET.SE3(SE3(trans) * SE3.RPY(rot))
+        else:
+            v = joint.axis
+            u, n = unitvec_norm(v)
+            R = angvec2r(n, u)
+            R_total = SE3.RPY(joint.rpy) * R
+            rpy = tr2rpy(R_total)
+            ets = ET.SE3(SE3(trans) * SE3.RPY(rpy))
+            joint.axis = [0, 0, 1]
+
+        var = None
+        if joint.joint_type in ("revolute", "continuous"):
+            if joint.axis[0] == 1:
+                var = ET.Rx()
+            elif joint.axis[0] == -1:
+                var = ET.Rx(flip=True)
+            elif joint.axis[1] == 1:
+                var = ET.Ry()
+            elif joint.axis[1] == -1:
+                var = ET.Ry(flip=True)
+            elif joint.axis[2] == 1:
+                var = ET.Rz()
+            elif joint.axis[2] == -1:
+                var = ET.Rz(flip=True)
+        elif joint.joint_type == "prismatic":
+            if joint.axis[0] == 1:
+                var = ET.tx()
+            elif joint.axis[0] == -1:
+                var = ET.tx(flip=True)
+            elif joint.axis[1] == 1:
+                var = ET.ty()
+            elif joint.axis[1] == -1:
+                var = ET.ty(flip=True)
+            elif joint.axis[2] == 1:
+                var = ET.tz()
+            elif joint.axis[2] == -1:
+                var = ET.tz(flip=True)
+
+        if var is not None:
+            ets = ets * var
+
+        if isinstance(ets, ET):
+            ets = ETS(ets)
+
+        childlink.ets = ets
+
+        try:
+            if childlink.isjoint:
+                if joint.limit.lower is not None and joint.limit.upper is not None:
+                    childlink.qlim = [joint.limit.lower, joint.limit.upper]
+                childlink.qdlim = joint.limit.velocity
+                childlink.tlim = joint.limit.effort
+        except AttributeError:
+            pass
+
+        try:
+            if joint.dynamics.friction is not None:
+                childlink.B = joint.dynamics.friction
+        except AttributeError:
+            pass
+
+        for t in urdf.transmissions:
+            if t.name == joint.name:
+                childlink.G = t.actuators[0].mechanicalReduction
+
+    return elinks, urdf.name
+
+
+def URDF_file(
+    file: str | Path | TextIO,
+    model: str | None = None,
+    patch: Callable[[str], str] | None = None,
+    extra_packages: dict[str, str] | None = None,
+) -> tuple:
+    """Parse a URDF or xacro file, return (elinks, name).
+
+    ``file`` may be:
+    - an absolute or relative path (str or Path) to a .urdf or .xacro file
+    - a bare name with no suffix, looked up via robot_descriptions
+    - a file-like object whose .read() gives the URDF XML
+
+    ``patch``, if given, is called with the raw file text and must return
+    the text to actually process. It runs *before* xacro processing/XML
+    parsing, so it can surgically correct known-broken third-party source
+    files (e.g. an upstream file with an unexpanded xacro macro that has no
+    definition anywhere in its own repo, or malformed XML) without touching
+    the upstream repo or the bundled `rtb-data` copy. See ``Valkyrie.py``
+    and ``Fetch.py`` for real examples — each documents exactly which
+    upstream bug its patch works around.
+
+    ``extra_packages``, if given, maps additional xacro package names to
+    paths relative to the bundled ``rtb-data`` xacro root. Use it when an
+    upstream file does ``$(find some_package)`` for a package name that
+    doesn't match any directory name rtb-data actually ships under — xacro's
+    package lookup only auto-discovers directories that are already known by
+    name, it doesn't fall back to searching by content. See ``LBR.py`` for a
+    real example.
+
+    :raises FileNotFoundError: if ``file`` is a path that does not exist
+    :raises URDFError: if xacro cannot expand the file, or the result is not
+        well-formed XML or not a valid robot description. The error reports
+        the stage that failed, the element and line involved, xacro's
+        include/macro stack, and the path of a saved copy of the expanded
+        URDF that the line number refers to. That copy is left in the
+        system temp directory for inspection
+    """
+    import rtbdata
+
+    xacro_root = Path(rtbdata.__file__).parent / "xacro"
+    pkg_map = {d.name: str(d) for d in xacro_root.iterdir() if d.is_dir()}
+    packages.update_package_cache(pkg_map)
+
+    if extra_packages is not None:
+        packages.update_package_cache(
+            {name: str(xacro_root / path) for name, path in extra_packages.items()}
+        )
+
+    xacro_args = None
+    if isinstance(file, str):
+        file = Path(file)
+        if file.suffix not in (".urdf", ".xacro"):
+            file, xacro_args = _load_urdf_from_RD(str(file))
+
+    resolved_path = None
+    if isinstance(file, Path):
+        if not file.is_absolute():
+            file = xacro_root / file
+        if not file.is_file():
+            raise FileNotFoundError(f"URDF/xacro file not found: {file}")
+        resolved_path = file
+        source = str(file)
+        if patch is not None:
+            # mirrors XacroDoc.from_file()'s own package-discovery step,
+            # since we bypass from_file() here to patch the text first
+            packages.walk_up_from(file)
+            text = patch(file.read_text())
+            doc = _expand_xacro(
+                source,
+                lambda: XacroDoc.from_string(
+                    text, rootdir=file.parent, subargs=xacro_args
+                ),
+            )
+        else:
+            doc = _expand_xacro(
+                source, lambda: XacroDoc.from_file(file, subargs=xacro_args)
+            )
+    else:
+        source = getattr(file, "name", None) or "<URDF text>"
+        text = file.read()
+        if patch is not None:
+            text = patch(text)
+        doc = _expand_xacro(source, lambda: XacroDoc.from_string(text))
+
+    elinks, name = _parse_urdf(doc.to_urdf_string(), source=source)
+    return elinks, name, resolved_path
+
+
+def URDF_read(
+    urdf_path: str | Path, patch: Callable[[str], str] | None = None
+) -> tuple:
+    """Load a URDF/xacro file, return (elinks, name, filepath).
+
+    ``filepath`` is the resolved filesystem path that was loaded, or None if
+    the source was a file-like object. See ``URDF_file`` for ``patch``.
+    """
+    return URDF_file(urdf_path, patch=patch)
+
+
+class URDFRobot(Robot):
+    """Base class for robot models loaded from a URDF or xacro file.
+
+    Subclasses pass the path and manufacturer directly to ``super().__init__()``::
+
+        class UR5(URDFRobot):
+            def __init__(self):
+                super().__init__(
+                    "ur5",
+                    manufacturer="Universal Robotics",
+                    gripper_link_name=["tool0", "ee_link"],
+                )
+                self.qz = np.zeros(6)
+                ...
+
+    ``gripper_link_name`` (a name, or a list of candidate names tried in
+    order) survives an upstream URDF reordering that would silently break a
+    raw positional ``gripper_link_index`` -- see #578. Prefer it for new
+    models; ``gripper_link_index`` remains for models where a stable,
+    well-known link name isn't available.
+    """
+
+    def __init__(
+        self,
+        urdf_path: str | Path,
+        manufacturer: str = "",
+        gripper_link_index: int | None = None,
+        gripper_link_name: str | list[str] | None = None,
+        patch: Callable[[str], str] | None = None,
+        extra_packages: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        elinks, name, filepath = URDF_file(
+            urdf_path, patch=patch, extra_packages=extra_packages
+        )
+        if gripper_link_name is not None:
+            candidates = (
+                [gripper_link_name]
+                if isinstance(gripper_link_name, str)
+                else gripper_link_name
+            )
+            for candidate in candidates:
+                match = next(
+                    (link for link in elinks if link.name == candidate), None
+                )
+                if match is not None:
+                    kwargs["gripper_links"] = match
+                    break
+            else:
+                raise ValueError(
+                    f"none of the candidate gripper link names {candidates!r} "
+                    f"were found in the parsed URDF for {name!r} (have: "
+                    f"{[link.name for link in elinks]})"
+                )
+        elif gripper_link_index is not None:
+            kwargs["gripper_links"] = elinks[gripper_link_index]
+        super().__init__(elinks, name=name, manufacturer=manufacturer, **kwargs)
+        self._urdf_filepath = str(filepath) if filepath is not None else ""

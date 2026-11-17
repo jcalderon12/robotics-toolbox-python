@@ -5,14 +5,18 @@
 
 import roboticstoolbox as rp
 import unittest
-import numpy.testing as nt
 
 
+# @unittest.skip("BUG in .models()")
 class TestModels(unittest.TestCase):
-    def test_list(self):
-        rp.models.list()
-        rp.models.list("UR", 6)
-        rp.models.list(type="DH")
+    def test_catalog(self):
+        rp.models.catalog()
+        rp.models.catalog("UR", 6)
+        rp.models.catalog(mtype="DH")
+
+    def test_list_deprecated(self):
+        with self.assertWarns(FutureWarning):
+            rp.models.list(mtype="DH")
 
     def test_puma(self):
         puma = rp.models.DH.Puma560()
@@ -35,6 +39,23 @@ class TestModels(unittest.TestCase):
         panda = rp.models.Panda()
         panda.qr
         panda.qz
+
+        # default: bundled qut_frankie_description xacro -- has collision
+        # geometry but no inertial data at all (see wiki's "Panda models"
+        # page and issue #686)
+        self.assertTrue(all(link.m == 0.0 for link in panda.links))
+
+    def test_PandaURDF_robot_descriptions(self):
+        panda = rp.models.URDF.Panda(use_robot_descriptions=True)
+        panda.qr
+        panda.qz
+
+        # robot_descriptions source has real inertial data for the arm
+        # links (the trailing gripper-mount link, panda_link8, is
+        # genuinely massless in this source too)
+        self.assertTrue(any(link.m > 0.0 for link in panda.links))
+        self.assertEqual(panda.n, 7)
+        self.assertEqual(len(panda.grippers), 1)
 
     def test_UR3(self):
         ur = rp.models.UR3()
@@ -96,8 +117,8 @@ class TestModels(unittest.TestCase):
         r.qr
         r.qz
 
-    def test_Mico(self):
-        r = rp.models.Mico()
+    def test_Jaco(self):
+        r = rp.models.Jaco()
         r.qr
         r.qz
 
@@ -139,6 +160,55 @@ class TestModels(unittest.TestCase):
 
     def test_pr2(self):
         rp.models.PR2()
+
+
+class TestModelSmoke(unittest.TestCase):
+    """Generic smoke test: every model exported from DH/URDF/ETS must
+    construct with no arguments.
+
+    The tests above are hand-written per model, so a model can be added to
+    __all__ and never get a dedicated test -- Valkyrie, Fetch, KinovaGen3,
+    FetchCamera and LBR all sat with zero test coverage this way, three of
+    them silently broken). Iterating
+    __all__ directly means newly-added models are covered automatically.
+    """
+
+    # (category, class name) pairs known to currently fail to construct.
+    # Remove an entry once its underlying issue is actually fixed -- if you
+    # don't, this test starts failing for the *opposite* reason (a listed
+    # failure unexpectedly started passing).
+    EXPECTED_FAILURES = set()
+
+    def test_all_models_construct(self):
+        unexpected_failures = []
+        unexpected_passes = []
+
+        for category_name in ("DH", "URDF", "ETS"):
+            category = getattr(rp.models, category_name)
+            for name in category.__all__:
+                cls = getattr(category, name)
+                key = (category_name, name)
+                try:
+                    cls()
+                except Exception as e:
+                    if key not in self.EXPECTED_FAILURES:
+                        unexpected_failures.append(
+                            f"{category_name}.{name}: {type(e).__name__}: {e}"
+                        )
+                else:
+                    if key in self.EXPECTED_FAILURES:
+                        unexpected_passes.append(f"{category_name}.{name}")
+
+        if unexpected_failures:
+            self.fail(
+                "Model(s) failed to construct:\n" + "\n".join(unexpected_failures)
+            )
+        if unexpected_passes:
+            self.fail(
+                "Model(s) in EXPECTED_FAILURES now construct successfully -- "
+                "remove from EXPECTED_FAILURES (and close out the matching "
+                "tracking issue):\n" + "\n".join(unexpected_passes)
+            )
 
 
 if __name__ == "__main__":  # pragma nocover

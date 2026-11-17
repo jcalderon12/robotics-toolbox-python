@@ -1,0 +1,1832 @@
+from __future__ import annotations
+
+# import matplotlib.pyplot as plt
+from math import cos, pi, sin
+from collections.abc import Callable
+from typing import Any
+
+import numpy as np
+import spatialmath.base as smb
+from bdsim.block_types import ContinuousBlock, FunctionBlock, GraphicsBlock, SourceBlock
+from spatialmath import SE3
+
+from roboticstoolbox import quintic_func, trapezoidal_func
+from roboticstoolbox.tools.types import ArrayLike, NDArray
+
+"""
+Robot blocks:
+- have inputs and outputs
+- are a subclass of ``FunctionBlock`` |rarr| ``Block`` for kinematics and have no states
+- are a subclass of ``ContinuousBlock`` |rarr| ``Block`` for dynamics and have states
+
+"""
+# The constructor of each class ``MyClass`` with a ``@block`` decorator becomes a method ``MYCLASS()`` of the BlockDiagram instance.
+
+
+def _check_gravity(value: Any) -> Any:
+    """Gravity is None, for the robot's own, or a 3-vector, which replaces ``value``."""
+    return None if value is None else smb.getvector(value, 3)
+
+
+# ------------------------------------------------------------------------ #
+class FKine(FunctionBlock):
+    r"""
+    :blockname:`FKINE`
+
+    Robot arm forward kinematics.
+
+    :inputs: 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{q}`
+        *   - Output
+            - 0
+            - SE3
+            - :math:`\mathbf{T}`
+
+    Compute the end-effector pose as an SE(3) object as a function of the input joint
+    configuration.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.fkine`
+    """
+
+    nin = 1
+    nout = 1
+    inlabels = ("q",)
+    outlabels = ("T",)
+
+    def __init__(self, robot: Any = None, args: Any = {}, **blockargs: Any) -> None:
+        """
+        :param ``*inputs``: Optional incoming connections
+        :type ``*inputs``: Block or Plug
+        :param robot: Robot model, defaults to None
+        :type robot: Robot subclass, optional
+        :param args: Options for fkine, defaults to {}
+        :type args: dict, optional
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "forward-kinematics"
+
+        self.robot = robot
+        self.args = args
+        self.add_param("robot", when="never")  # fixes the ports
+        self.add_param("args", coerce=False)
+
+        self.inport_names(("q",))
+        self.outport_names(("T",))
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        q = inports[0]
+        return [self.robot.fkine(q, **self.args)]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class IKine(FunctionBlock):
+    r"""
+    :blockname:`IKINE`
+
+    Robot arm inverse kinematics.
+
+    :inputs: 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - SE3
+            - :math:`\mathbf{T}`
+        *   - Output
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{q}`
+
+    Compute joint configuration required to achieve end-effector pose input as
+    an SE(3) object.
+
+    :note: The solution may not exist and is not unique.  The solution will depend
+        on the initial joint configuration ``q0``.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.ik_LM`
+    """
+
+    nin = 1
+    nout = 1
+    inlabels = ("T",)
+    outlabels = ("q",)
+
+    def __init__(
+        self,
+        robot: Any = None,
+        q0: Any = None,
+        useprevious: bool = True,
+        ik: Any = None,
+        args: Any = {},
+        seed: Any = None,
+        **blockargs: Any,
+    ) -> None:
+        """
+        :param robot: Robot model, defaults to None
+        :type robot: Robot subclass, optional
+        :param q0: Initial joint angles, defaults to None
+        :type q0: array_like(n), optional
+        :param useprevious: Use previous IK solution as q0, defaults to True
+        :type useprevious: bool, optional
+        :param ik: Specify an IK function, defaults to "LM"
+        :type ik: str
+        :param args: Options passed to IK function
+        :type args: dict
+        :param seed: random seed for solution
+        :type seed: int
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "inverse-kinematics"
+
+        self.robot = robot
+        self.q0 = q0
+        self.qprev = q0
+        self.useprevious = useprevious
+        if ik is None:
+            ik = robot.ikine_LM
+        self.ik = ik
+        self.args = args
+        # the seed argument used to be ignored, which left it at 0
+        self.seed = 0 if seed is None else seed
+        self.add_param("robot", when="never")  # fixes the ports
+        self.add_param("q0", when="setup", coerce=False)  # start() copies it
+        self.add_param("useprevious")
+        self.add_param("ik", coerce=False)
+        self.add_param("args", coerce=False)
+        self.add_param("seed", coerce=False)
+
+        self.inport_names(("T",))
+        self.outport_names(("q",))
+
+    def start(self, simstate: Any) -> None:
+        super().start(simstate)
+        if self.useprevious:
+            self.qprev = self.q0
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        if self.useprevious:
+            q0 = self.qprev
+        else:
+            q0 = self.q0
+
+        sol = self.ik(inports[0], q0=q0, seed=self.seed, **self.args)
+
+        if not sol.success:
+            raise RuntimeError("inverse kinematic failure for pose", inports[0])
+
+        if self.useprevious:
+            self.qprev = sol.q
+
+        return [sol.q]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class Jacobian(FunctionBlock):
+    r"""
+    :blockname:`JACOBIAN`
+
+    Robot arm Jacobian matrix.
+
+    :inputs: 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{q}`
+        *   - Output
+            - 0
+            - ndarray(N,N)
+            - :math:`\mathbf{J}`
+
+    Compute the Jacobian matrix as a function of the input joint configuration.  The
+    Jacobian can be computed in the world or end-effector frame, for spatial or
+    analytical velocity, and its inverse, damped inverse or transpose can be returned.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.jacob0`
+        :meth:`~roboticstoolbox.robot.Robot.Robot.jacobe`
+        :meth:`~roboticstoolbox.robot.Robot.Robot.jacob0_analytical`
+    """
+
+    nin = 1
+    nout = 1
+    inlabels = ("q",)
+    outlabels = ("J",)
+
+    def __init__(
+        self,
+        robot: Any,
+        frame: str = "0",
+        representation: Any = None,
+        inverse: bool = False,
+        pinv: bool = False,
+        damping: Any = None,
+        transpose: bool = False,
+        **blockargs: Any,
+    ) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param frame: Frame to compute Jacobian for, one of: "0" [default], "e"
+        :type frame: str, optional
+        :param representation: representation for analytical Jacobian
+        :type representation: str, optional
+        :param inverse: output inverse of Jacobian, defaults to False
+        :type inverse: bool, optional
+        :param pinv: output pseudo-inverse of Jacobian, defaults to False
+        :type pinv: bool, optional
+        :param damping: damping term for inverse, defaults to None
+        :type damping: float or array_like(N)
+        :param transpose: output transpose of Jacobian, defaults to False
+        :type transpose: bool, optional
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+
+        If an inverse is requested and ``damping`` is not None it is added to the
+        diagonal of the Jacobian prior to the inversion.  If a scalar is provided it is
+        added to each element of the diagonal, otherwise an N-vector is assumed.
+
+        .. note::
+            - Only one of ``inverse`` or ``pinv`` can be True
+            - ``inverse`` or ``pinv`` can be used in conjunction with ``transpose``
+            - ``inverse`` requires that the Jacobian is square
+            - If ``inverse`` is True and the Jacobian is singular a runtime
+              error will occur.
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+
+        self.robot = robot
+
+        self._frame = frame
+        self._representation = representation
+        self.jfunc = self._make_jfunc(frame, representation)
+
+        self._inverse = False
+        self._pinv = False
+        self.inverse = inverse
+        self.pinv = pinv
+        self.damping = damping
+        self.transpose = transpose
+
+        self.add_param("robot", when="never")  # fixes the ports
+        self.add_param("frame")
+        self.add_param("representation", coerce=False)
+        self.add_param("inverse")
+        self.add_param("pinv")
+        self.add_param("damping", coerce=False)
+        self.add_param("transpose")
+
+        self.inport_names(("q",))
+        self.outport_names(("J",))
+
+    def _make_jfunc(self, frame: Any, representation: Any) -> Callable[[Any], Any]:
+        """The function that computes the Jacobian, or ValueError if not possible."""
+        robot = self.robot
+        if frame in (0, "0"):
+            if representation is None:
+                return robot.jacob0
+            return lambda q: robot.jacob0_analytical(q, representation=representation)
+        elif frame == "e":
+            if representation is None:
+                return robot.jacobe
+            raise ValueError("cannot compute analytical Jacobian in EE frame")
+        raise ValueError("unknown frame")
+
+    @property
+    def frame(self) -> str:
+        """The frame the Jacobian is computed in, ``"0"`` or ``"e"``."""
+        return self._frame
+
+    @frame.setter
+    def frame(self, value: str) -> None:
+        self.jfunc = self._make_jfunc(value, self._representation)
+        self._frame = value
+
+    @property
+    def representation(self) -> str | None:
+        """The representation of the analytical Jacobian, None for the geometric."""
+        return self._representation
+
+    @representation.setter
+    def representation(self, value: str | None) -> None:
+        self.jfunc = self._make_jfunc(self._frame, value)
+        self._representation = value
+
+    @property
+    def inverse(self) -> bool:
+        """Output the inverse of the Jacobian, which must be square."""
+        return self._inverse
+
+    @inverse.setter
+    def inverse(self, value: bool) -> None:
+        if value and self.robot.n != 6:
+            raise ValueError("cannot invert a non square Jacobian")
+        if value and self._pinv:
+            raise ValueError("can only set one of inverse and pinv")
+        self._inverse = bool(value)
+
+    @property
+    def pinv(self) -> bool:
+        """Output the pseudo-inverse of the Jacobian."""
+        return self._pinv
+
+    @pinv.setter
+    def pinv(self, value: bool) -> None:
+        if value and self._inverse:
+            raise ValueError("can only set one of inverse and pinv")
+        self._pinv = bool(value)
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        q = inports[0]
+
+        J = self.jfunc(q)
+
+        # add damping term if given
+        if (self.inverse or self.pinv) and self.damping is not None:
+            D = np.zeros(J.shape)
+            np.fill_diagonal(D, self.damping)
+            J = J + D
+
+        # optionally invert the Jacobian
+        if self.inverse:
+            J = np.linalg.inv(J)
+        if self.pinv:
+            J = np.linalg.pinv(J)
+
+        # optionally transpose the Jacobian
+        if self.transpose:
+            J = J.T
+        return [J]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class ArmPlot(GraphicsBlock):
+    r"""
+    :blockname:`ARMPLOT`
+
+    Plot robot arm.
+
+    :inputs: 1 [ndarray(N)]
+    :outputs: 0
+    :states: 0
+
+    :inputs: 1
+    :outputs: 0
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{q}`, joint configuration
+
+    Create a robot animation using the robot's ``plot`` method.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.plot`
+    """
+
+    nin = 1
+    nout = 0
+    inlabels = ("q",)
+    PLOT3D = True
+
+    def __init__(
+        self, robot: Any = None, q0: Any = None, backend: Any = None, **blockargs: Any
+    ) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param q0: initial joint angles, defaults to None
+        :type q0: ndarray(N)
+        :param backend: RTB backend name, defaults to 'pyplot'
+        :type backend: str, optional
+        :param blockargs: |GraphicsBlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        self.inport_names(("q",))
+
+        if q0 is None:
+            q0 = np.zeros((robot.n,))
+        self.robot = robot
+        self.backend = backend
+        self.q0 = q0
+        self.env: Any = None
+        self.add_param("robot", when="never")  # fixes the input size
+        self.add_param("q0", when="setup", coerce=False)  # start() plots it
+        self.add_param("backend", when="setup")
+
+    def start(self, simstate: Any) -> None:
+        # create the plot
+        # super().reset()
+        # if state.options.graphics:
+        super().start(simstate)
+
+        if not self._enabled:
+            return
+
+        assert self.fig is not None  # nosec B101: narrows the type for mypy
+        assert self.ax is not None  # nosec B101: narrows the type for mypy
+        self.env = self.robot.plot(
+            self.q0,
+            backend=self.backend,
+            fig=self.fig,
+            block=False,
+        )
+
+    def step(self, t: Any, inports: Any) -> None:
+        if not self._enabled:
+            return
+
+        # update the robot plot
+        self._set_pose(inports[0])
+        self.env.step()
+
+        super().step(t, inports)
+
+    def _set_pose(self, q: ArrayLike) -> None:
+        """
+        Move the plotted robot to a joint configuration
+
+        :param q: joint configuration
+
+        A plot made with an initial pose, as :meth:`start` does, holds that pose and
+        ignores ``robot.q``, so the plots of the scene are moved as well as the robot.
+        This is the one place that knows how, so that anything that drives this block
+        differently, such as bdsim's notebook support, can call it and not repeat it.
+        """
+        self.robot.q = q
+        for robot_plot in self.env.robots:
+            robot_plot.q = q
+
+
+# ======================================================================== #
+
+
+class JTraj(SourceBlock):
+    r"""
+    :blockname:`JTRAJ`
+
+    Joint-space trajectory
+
+    :inputs: 0
+    :outputs: 3
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Output
+            - 0
+            - ndarray
+            - :math:`q(s)`
+        *   - Output
+            - 1
+            - ndarray
+            - :math:`\dot{q}(s)`
+        *   - Output
+            - 2
+            - ndarray
+            - :math:`\ddot{q}(s)`
+
+    Outputs a joint space trajectory where the joint coordinates vary from ``q0`` to
+    ``qf`` over the course of the simulation. A quintic (5th order) polynomial is used
+    with default zero boundary conditions for velocity and acceleration.
+
+    .. seealso:: :func:`~roboticstoolbox.tools.trajectory.ctraj`
+        ``xplot``
+        :func:`~roboticstoolbox.tools.trajectory.jtraj`
+    """
+
+    nin = 0
+    nout = 3
+    outlabels = ("q", "qd", "qdd")
+
+    def __init__(
+        self,
+        q0: Any,
+        qf: Any,
+        qd0: Any = None,
+        qdf: Any = None,
+        T: Any = None,
+        **blockargs: Any,
+    ) -> None:
+        """
+
+        :param q0: initial joint coordinate
+        :type q0: array_like(n)
+        :param qf: final joint coordinate
+        :type qf: array_like(n)
+        :param T: time vector or number of steps, defaults to None
+        :type T: array_like or int, optional
+        :param qd0: initial velocity, defaults to None
+        :type qd0: array_like(n), optional
+        :param qdf: final velocity, defaults to None
+        :type qdf: array_like(n), optional
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        super().__init__(**blockargs)
+        self.outport_names(
+            (
+                "q",
+                "qd",
+                "qdd",
+            )
+        )
+
+        q0 = smb.getvector(q0)
+        qf = smb.getvector(qf)
+
+        if not len(q0) == len(qf):
+            raise ValueError("q0 and q1 must be same size")
+
+        if qd0 is None:
+            qd0 = np.zeros(q0.shape)
+        else:
+            qd0 = smb.getvector(qd0)
+            if not len(qd0) == len(q0):
+                raise ValueError("qd0 has wrong size")
+        if qdf is None:
+            qdf = np.zeros(q0.shape)
+        else:
+            qdf = smb.getvector(qdf)
+            if not len(qdf) == len(q0):
+                raise ValueError("qdf has wrong size")
+
+        self.q0 = q0
+        self.qf = qf
+        self.qd0 = qd0
+        self.qdf = qdf
+
+        self.coeffs: Any = None  # indicate that coefficients have not been computed yet
+
+        self.T = T
+
+        # start() computes the coefficients from all of these
+        self.add_param("q0", when="setup")
+        self.add_param("qf", when="setup")
+        self.add_param("qd0", when="setup")
+        self.add_param("qdf", when="setup")
+        self.add_param("T", when="setup", coerce=False)  # None is the run length
+
+    def start(self, simstate: Any) -> None:
+        # None is the length of the run, which can differ from one run to the next
+        tscal = simstate.tf if self.T is None else self.T
+        self.tscal = tscal
+
+        q0 = self.q0
+        qf = self.qf
+        qd0 = self.qd0
+        qdf = self.qdf
+
+        # compute the polynomial coefficients
+        A = 6 * (qf - q0) - 3 * (qdf + qd0) * tscal
+        B = -15 * (qf - q0) + (8 * qd0 + 7 * qdf) * tscal
+        C = 10 * (qf - q0) - (6 * qd0 + 4 * qdf) * tscal
+        E = qd0 * tscal
+        F = q0
+
+        self.coeffs = np.array([A, B, C, np.zeros(A.shape), E, F])
+        self.dcoeffs = np.array(
+            [np.zeros(A.shape), 5 * A, 4 * B, 3 * C, np.zeros(A.shape), E]
+        )
+        self.ddcoeffs = np.array(
+            [
+                np.zeros(A.shape),
+                np.zeros(A.shape),
+                20 * A,
+                12 * B,
+                6 * C,
+                np.zeros(A.shape),
+            ]
+        )
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        if self.coeffs is None:
+            # called from compile before start() is called
+            n = len(self.q0)
+            return [np.zeros(n), np.zeros(n), np.zeros(n)]
+
+        tscal = self.tscal
+        ts = t / tscal
+        tt = np.array([ts**5, ts**4, ts**3, ts**2, ts, 1]).T
+
+        qt = tt @ self.coeffs
+
+        # compute  velocity
+        qdt = tt @ self.dcoeffs / tscal
+
+        # compute  acceleration
+        qddt = tt @ self.ddcoeffs / tscal**2
+
+        return [qt, qdt, qddt]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class CTraj(SourceBlock):
+    r"""
+    :blockname:`CTRAJ`
+
+    Task space trajectory
+
+    :inputs: 0
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Output
+            - 0
+            - SE3
+            - :math:`\mathbf{T}(t)`
+
+    The block outputs a pose that varies smoothly from ``T1`` to ``T2`` over
+    the course of ``T`` seconds.
+
+    If ``T`` is not given it defaults to the simulation time.
+
+    If ``trapezoidal`` is True then a trapezoidal motion profile is used along the path
+    to provide initial acceleration and final deceleration.  Otherwise,
+    motion is at constant velocity.
+
+    .. seealso:: :meth:`~spatialmath.pose3d.SE3.interp`
+        :func:`~roboticstoolbox.tools.trajectory.ctraj`
+        ``xplot``
+        :func:`~roboticstoolbox.tools.trajectory.jtraj`
+    """
+
+    nin = 0
+    nout = 1
+    outlabels = ("T",)
+
+    def __init__(
+        self, T1: Any, T2: Any, T: Any, trapezoidal: bool = True, **blockargs: Any
+    ) -> None:
+        """
+        :param T1: initial pose
+        :type T1: SE3
+        :param T2: final pose
+        :type T2: SE3
+        :param T: motion time
+        :type T: float
+        :param trapezoidal: Use LSPB motion profile along the path
+        :type trapezoidal: bool
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+
+        # TODO
+        # flag to rotate the frame rather than just translate it
+        super().__init__(**blockargs)
+
+        self.T1 = T1
+        self.T2 = T2
+        self.T = T
+        self.trapezoidal = trapezoidal
+        self.add_param("T1", coerce=False)
+        self.add_param("T2", coerce=False)
+        self.add_param("T", when="setup", coerce=False)  # None is the run length
+        self.add_param("trapezoidal", when="setup")
+
+    def start(self, simstate: Any) -> None:
+        # None is the length of the run, which can differ from one run to the next
+        self._T_run = simstate.T if self.T is None else self.T
+        if self.trapezoidal:
+            self.trapezoidalfunc = trapezoidal_func(0.0, 1.0, self._T_run)
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        s: Any
+        if self.trapezoidal:
+            s = self.trapezoidalfunc(t)[0]  # get the position from the trapezoidal function
+        else:
+            s = min(t / self._T_run, 1.0)
+
+        return [self.T1.interp(self.T2, s)]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class CirclePath(SourceBlock):
+    r"""
+    :blockname:`CIRCLEPATH`
+
+    Circular motion.
+
+    :inputs: 0 or 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Output
+            - 0
+            - ndarray(3) or SE3
+            - :math:`\mathit{p}(t)` or :math:`\mathbf{T}(t)`
+
+    The block outputs the coordinates of a point moving in a circle of
+    radius ``r`` centred at ``centre`` and parallel to the xy-plane.
+
+    By default the output is a 3-vector :math:`(x, y, z)` but if
+    ``pose`` is an ``SE3`` instance the output is a copy of that pose with
+    its translation set to the coordinate of the moving point.  This is the
+    motion of a frame with fixed orientation following a circular path.
+    """
+
+    nin = 0
+    nout = 1
+
+    def __init__(
+        self,
+        radius: float = 1,
+        centre: Any = (0, 0, 0),
+        pose: Any = None,
+        frequency: float = 1,
+        unit: str = "rps",
+        phase: float | None = None,
+        **blockargs: Any,
+    ) -> None:
+        """
+        :param radius: radius of circle, defaults to 1
+        :type radius: float
+        :param centre: center of circle, defaults to [0,0,0]
+        :type centre: array_like(3)
+        :param pose: SE3 pose of output, defaults to None
+        :type pose: SE3
+        :param frequency: rotational frequency, defaults to 1
+        :type frequency: float
+        :param unit: unit for frequency, one of: 'rps' [default], 'rad'
+        :type unit: str
+        :param phase: phase
+        :type phase: float
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if phase is None:
+            phase = 0
+        # TODO
+        # flag to rotate the frame rather than just translate it
+        super().__init__(**blockargs)
+        if unit not in ("rps", "rad"):
+            raise ValueError("bad units: rps or rad")
+        self.unit = unit
+        self.radius = radius
+        if len(centre) != 3:
+            raise ValueError("centre must be a 3 vector")
+        self.centre = centre
+        self.pose = pose
+        # frequency and phase are kept in the unit they were given in, and the
+        # angular rate and phase that output() uses are derived from them
+        self.frequency = frequency
+        self.phase = phase
+        self.outport_names(("y",))
+        self.add_param("radius")
+        self.add_param("centre", validate=self._check_centre, coerce=False)
+        self.add_param("pose", coerce=False)
+        self.add_param("frequency")
+        self.add_param("unit", when="never")  # what frequency and phase mean
+        self.add_param("phase")
+
+    @staticmethod
+    def _check_centre(value: Any) -> None:
+        if len(value) != 3:
+            raise ValueError("centre must be a 3 vector")
+
+    @property
+    def frequency(self) -> float:
+        """Frequency of the circle, in the units of ``unit``."""
+        return self._frequency
+
+    @frequency.setter
+    def frequency(self, value: float) -> None:
+        self._frequency = value
+        self.omega = value * 2 * pi if self.unit == "rps" else value
+
+    @property
+    def phase(self) -> float:
+        """Phase of the circle, in the units of ``unit`` (cycles or radians)."""
+        return self._phase
+
+    @phase.setter
+    def phase(self, value: float) -> None:
+        self._phase = value
+        self._phase_rad = value * 2 * pi if self.unit == "rps" else value
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        theta = t * self.omega + self._phase_rad
+        x = self.radius * cos(theta) + self.centre[0]
+        y = self.radius * sin(theta) + self.centre[1]
+        p = (x, y, self.centre[2])
+
+        if self.pose is not None:
+            pp = SE3.Rt(self.pose.R, p)
+            p = pp
+
+        return [p]
+
+
+class Trapezoidal(SourceBlock):
+    r"""
+    :blockname:`Trapezoidal`
+
+    Trapezoidal scalar trajectory
+
+    :inputs: 0
+    :outputs: 3
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Output
+            - 0
+            - float
+            - :math:`q(t)`
+        *   - Output
+            - 1
+            - float
+            - :math:`\dot{q}(t)`
+        *   - Output
+            - 2
+            - float
+            - :math:`\ddot{q}(t)`
+
+
+    Scalar trapezoidal trajectory that varies from ``q0`` to ``qf`` over the
+    simulation period.
+
+    .. versionchanged:: 1.5.0
+        The outputs are scalars, as the table says.  They were arrays with one
+        element, because ``trapezoidal_func`` returned arrays for a scalar
+        time.
+
+    .. seealso:: ``ctraj``, ``xplot``, :func:`~roboticstoolbox.tools.trajectory.jtraj`
+    """
+
+    nin = 0
+    nout = 3
+    outlabels = ("q", "qd", "qdd")
+
+    # TODO: change name to Trapezoidal, check if used anywhere
+
+    def __init__(
+        self, q0: Any, qf: Any, V: Any = None, T: Any = None, **blockargs: Any
+    ) -> None:
+        """
+        Compute a joint-space trajectory
+
+        :param q0: initial joint coordinate
+        :type q0: float
+        :param qf: final joint coordinate
+        :type qf: float
+        :param T: maximum time, defaults to None
+        :type T: float, optional
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+
+        If ``T`` is given the value ``qf`` is reached at this time.  This can be
+        less or greater than the simulation time.
+        """
+        super().__init__(nout=3, **blockargs)
+        self.T = T
+        self.q0 = q0
+        self.qf = qf
+        # start() builds the trajectory from these
+        self.add_param("q0", when="setup", coerce=False)
+        self.add_param("qf", when="setup", coerce=False)
+        self.add_param("V", when="never")  # accepted and ignored
+        self.add_param("T", when="setup", coerce=False)  # None is the run length
+
+    def start(self, simstate: Any) -> None:
+        # None is the length of the run, which can differ from one run to the next
+        T = simstate.T if self.T is None else self.T
+        self.trapezoidalfunc = trapezoidal_func(self.q0, self.qf, T)
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        return list(self.trapezoidalfunc(t))
+
+
+# ------------------------------------------------------------------------ #
+
+
+class Traj(FunctionBlock):
+    r"""
+    :blockname:`TRAJ`
+
+    Vector trajectory
+
+    :inputs: 0 or 1
+    :outputs: 3
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - float
+            - :math:`s \in [0, 1]` distance along trajectory.
+        *   - Output
+            - 0
+            - ndarray
+            - :math:`y(s)`
+        *   - Output
+            - 1
+            - ndarray
+            - :math:`\dot{y}(s)`
+        *   - Output
+            - 2
+            - ndarray
+            - :math:`\ddot{y}(s)`
+
+    Generates a vector trajectory using a trapezoidal or quintic
+    polynomial profile that varies from ``y0`` to ``yf``
+
+    The distance along the trajectory is either:
+
+    - a linear function from 0 to ``T`` or maximum simulation time if `time` is True, or
+    - the value [0, 1] given on inport port if `time` is False
+
+    .. versionchanged:: 1.5.0
+        An unknown ``traj`` raises ``ValueError`` when the block is created.  It
+        previously failed with an ``UnboundLocalError`` when the simulation
+        started.  The outputs are unchanged.
+
+    .. seealso:: :func:`spatialmath.base.mtraj`
+    """
+
+    nin = -1
+    nout = 3
+    outlabels = ("q", "qd", "qdd")
+
+    # TODO: this needs work, need better description of what this does for
+    # time-based case
+
+    def __init__(
+        self,
+        y0: ArrayLike | float = 0,
+        yf: ArrayLike | float = 1,
+        T: Any = None,
+        time: bool = False,
+        traj: str = "trapezoidal",
+        **blockargs: Any,
+    ) -> None:
+        """
+        :param y0: initial value, defaults to 0
+        :type y0: array_like(m), optional
+        :param yf: final value, defaults to 1
+        :type yf: array_like(m), optional
+        :param T: maximum time, defaults to None
+        :type T: float, optional
+        :param time: if `True` trajectory is based on simulation time, else based on input 0. Defaults to False
+        :type time: bool, optional
+        :param traj: trajectory type, one of: 'trapezoidal' [default], 'quintic'
+        :type traj: str, optional
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        self.time = time
+        if time:
+            # function of time in simulation
+            nin = 0
+            blockclass = "source"
+        else:
+            # function of input port
+            nin = 1
+            blockclass = "function"
+
+        super().__init__(nin=nin, blockclass=blockclass, **blockargs)
+
+        y0v = smb.getvector(y0)
+        yfv = smb.getvector(yf)
+        if len(y0v) != len(yfv):
+            raise ValueError("y0 and yf must have same length")
+
+        self.y0 = y0v
+        self.yf = yfv
+        self.time = time
+        self.T = T
+        if traj not in ("trapezoidal", "quintic"):
+            raise ValueError(
+                f"unknown traj {traj!r}, must be 'trapezoidal' or 'quintic'"
+            )
+        self.traj = traj
+        self.outport_names(("y", "yd", "ydd"))
+        # start() builds the trajectory from these
+        self.add_param("y0", when="setup")
+        self.add_param("yf", when="setup")
+        self.add_param("T", when="setup", coerce=False)  # None is the run length
+        self.add_param("time", when="never")  # source or function block
+        self.add_param("traj", when="setup", validate=self._check_traj)
+
+    @staticmethod
+    def _check_traj(value: str) -> None:
+        if value not in ("trapezoidal", "quintic"):
+            raise ValueError(
+                f"unknown traj {value!r}, must be 'trapezoidal' or 'quintic'"
+            )
+
+    def start(self, simstate: Any) -> None:
+        # if self.time:
+        #     assert self.x[0] <= 0, "interpolation not defined for t=0"
+        #     assert self.x[-1] >= simstate.T, "interpolation not defined for t=T"
+
+        self.trajfuncs: list[Callable[[Any], tuple[Any, Any, Any]]] = []
+
+        if self.time:
+            # time based
+            if self.T is not None:
+                xmax = self.T
+            else:
+                xmax = simstate.T
+        else:
+            # input based
+            xmax = 1
+        self.xmax = xmax
+
+        for i in range(len(self.y0)):
+            if self.traj == "trapezoidal":
+                self.trajfuncs.append(trapezoidal_func(self.y0[i], self.yf[i], xmax))
+            else:
+                self.trajfuncs.append(quintic_func(self.y0[i], self.yf[i], xmax))
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        if not self.time:
+            t = inports[0]
+
+        if t < 0:
+            raise ValueError("interpolation not defined for x<0")
+        if t > self.xmax:
+            raise ValueError("interpolation not defined for x>" + str(self.xmax))
+
+        out = []
+        for i in range(len(self.y0)):
+            out.append(self.trajfuncs[i](t))
+
+        # we have a list of tuples out[i][j]
+        # i is the timestep, j is y/yd/ydd
+        y = [o[0] for o in out]
+        yd = [o[1] for o in out]
+        ydd = [o[2] for o in out]
+
+        return [np.hstack(y), np.hstack(yd), np.hstack(ydd)]
+
+
+# ======================================================================== #
+
+
+class IDyn(FunctionBlock):
+    r"""
+    :blockname:`IDYN`
+
+    Robot arm inverse dynamics model.
+
+    :inputs: 3
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{q}`, joint configuration
+        *   - Input
+            - 1
+            - ndarray(N)
+            - :math:`\dot{\mathit{q}}`, joint velocity
+        *   - Input
+            - 2
+            - ndarray(N)
+            - :math:`\ddot{\mathit{q}}`, joint acceleration
+        *   - Output
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{Q}`, generalized joint force
+
+    Compute the generalized joint torques required to achieve the input joint
+    configuration, velocity and acceleration.  This uses the recursive Newton-Euler
+    (RNE) algorithm.
+
+    .. todo:: end-effector wrench input, base wrench output, payload input
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.rne`
+    """
+
+    nin = 3
+    nout = 1
+    inlabels = ("q", "qd", "qdd")
+    outlabels = "τ"
+
+    def __init__(self, robot: Any, gravity: Any = None, **blockargs: Any) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param gravity: gravitational acceleration in the world frame,
+            downwards gravitational force is equivalent to robot base
+            acceleration upwards (positive)
+        :type gravity: ndarray(3)
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "inverse-dynamics"
+
+        self.robot = robot
+        self.gravity = None if gravity is None else smb.getvector(gravity, 3)
+        self.add_param("robot", when="never")  # fixes the ports
+        self.add_param("gravity", validate=_check_gravity, coerce=False)
+
+        # state vector is [q qd]
+
+        self.inport_names(("q", "qd", "qdd"))
+        self.outport_names(("$\tau$",))
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        tau = self.robot.rne(inports[0], inports[1], inports[2], gravity=self.gravity)
+        return [tau]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class Gravload(FunctionBlock):
+    r"""
+    :blockname:`GRAVLOAD`
+
+    Robot arm gravity load.
+
+    :inputs: 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{q}`, joint configuration
+        *   - Output
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{g}`, generalized joint force
+
+    Compute generalized joint forces due to gravity for the input joint
+    configuration.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.gravload`
+    """
+
+    nin = 1
+    nout = 1
+    inlabels = ("q",)
+    outlabels = "τ"
+
+    def __init__(self, robot: Any, gravity: Any = None, **blockargs: Any) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param gravity: gravitational acceleration in the world frame,
+            downwards gravitational force is equivalent to robot base
+            acceleration upwards (positive)
+        :type gravity: ndarray(3)
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "gravload"
+
+        self.robot = robot
+        self.gravity = None if gravity is None else smb.getvector(gravity, 3)
+        self.add_param("robot", when="never")  # fixes the ports
+        self.add_param("gravity", validate=_check_gravity, coerce=False)
+        self.inport_names(("q",))
+        self.outport_names(("$\tau$",))
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        tau = self.robot.gravload(inports[0], gravity=self.gravity)
+        return [tau]
+
+
+class Gravload_X(FunctionBlock):
+    r"""
+    :blockname:`GRAVLOAD_X`
+
+    Task-space robot arm gravity wrench.
+
+    :inputs: 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(6)
+            - :math:`\mathit{x}`, end-effector pose
+        *   - Output
+            - 0
+            - ndarray(6)
+            - :math:`\mathit{g}_x`, generalized joint force
+
+    Compute end-effector wrench due to gravity for the input end-effector pose.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.gravload_x`
+        :meth:`~roboticstoolbox.robot.Robot.Robot.gravload`
+    """
+
+    nin = 1
+    nout = 1
+    inlabels = ("q",)
+    outlabels = "w"
+
+    def __init__(
+        self,
+        robot: Any,
+        representation: str = "rpy/xyz",
+        gravity: Any = None,
+        **blockargs: Any,
+    ) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param representation: task-space representation, defaults to "rpy/xyz"
+        :type representation: str
+        :param gravity: gravitational acceleration in the world frame,
+            downwards gravitational force is equivalent to robot base
+            acceleration upwards (positive)
+        :type gravity: ndarray(3)
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "gravload-x"
+
+        self.robot = robot
+        self.gravity = None if gravity is None else smb.getvector(gravity, 3)
+        self.add_param("robot", when="never")  # fixes the ports
+        self.add_param("gravity", validate=_check_gravity, coerce=False)
+        self.inport_names(("q",))
+        self.outport_names(("$\tau$",))
+        self.representation = representation
+        self.add_param("representation")
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        q = inports[0]
+        w = self.robot.gravload_x(
+            q, representation=self.representation, gravity=self.gravity
+        )
+        return [w]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class Inertia(FunctionBlock):
+    r"""
+    :blockname:`INERTIA`
+
+    Robot arm inertia matrix.
+
+    :inputs: 1 [ndarray(N)]
+    :outputs: 3 [ndarray(N,N)]
+    :states: 0
+
+    :inputs: 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray
+            - :math:`\mathit{q}`, joint configuration
+        *   - Output
+            - 0
+            - ndarray(N,N)
+            - :math:`\mathbf{M}`, mass matrix
+
+    Joint-space inertia matrix (mass matrix) as a function of joint configuration.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.inertia`
+    """
+
+    nin = 1
+    nout = 1
+    inlabels = ("q",)
+    outlabels = "M"
+
+    def __init__(self, robot: Any, **blockargs: Any) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "inertia"
+
+        self.robot = robot
+        self.add_param("robot", when="never")  # fixes the ports
+        self.inport_names(("q",))
+        self.outport_names(("M",))
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        q = inports[0]
+        M = self.robot.inertia(q)
+        return [M]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class Inertia_X(FunctionBlock):
+    r"""
+    :blockname:`INERTIA_X`
+
+    Task-space robot arm inertia matrix.
+
+    :inputs: 1
+    :outputs: 1
+    :states: 0
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(6)
+            - :math:`\mathit{x}`, end-effector pose
+        *   - Output
+            - 0
+            - ndarray(6,6)
+            - :math:`\mathbf{M_x}`, task-space mass matrix
+
+    Task-space inertia matrix as a function of end-effector pose.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.inertia_x`
+    """
+
+    nin = 1
+    nout = 1
+    inlabels = ("q",)
+    outlabels = "M"
+
+    def __init__(
+        self,
+        robot: Any,
+        representation: str = "rpy/xyz",
+        pinv: bool = False,
+        **blockargs: Any,
+    ) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param representation: task-space representation, defaults to "rpy/xyz"
+        :type representation: str
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "inertia-x"
+
+        self.robot = robot
+        self.representation = representation
+        self.pinv = pinv
+        self.add_param("robot", when="never")  # fixes the ports
+        self.add_param("representation")
+        self.add_param("pinv")
+        self.inport_names(("q",))
+        self.outport_names(("M",))
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        q = inports[0]
+        Mx = self.robot.inertia_x(q, pinv=self.pinv, representation=self.representation)
+        return [Mx]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class FDyn(ContinuousBlock):
+    r"""
+    :blockname:`FDYN`
+
+    Robot arm forward dynamics.
+
+    :inputs: 1
+    :outputs: 3
+    :states: 2N
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{Q}`, generalized joint force
+        *   - Output
+            - 0
+            - ndarray(N)
+            - :math:`\mathit{q}`, joint configuration
+        *   - Output
+            - 1
+            - ndarray(N)
+            - :math:`\dot{\mathit{q}}`, joint velocity
+        *   - Output
+            - 2
+            - ndarray(N)
+            - :math:`\ddot{\mathit{q}}`, joint acceleration
+
+    Compute the manipulator arm forward dynamics in joint space, the joint acceleration
+    for the input configuration and applied joint forces.  The acceleration is
+    integrated to obtain joint velocity and joint configuration.
+
+    .. seealso:: :meth:`~roboticstoolbox.robot.Robot.Robot.fdyn`
+    """
+
+    nin = 1
+    nout = 3
+    outlabels = ("q", "qd", "qdd")
+    inlabels = "τ"
+
+    def __init__(self, robot: Any, q0: Any = None, **blockargs: Any) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param q0: Initial joint configuration
+        :type q0: array_like(n)
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "forward-dynamics"
+
+        self.robot = robot
+        self.nstates = robot.n * 2
+        self.add_param("robot", when="never")  # fixes the ports and states
+        self.add_param("q0", when="setup")
+
+        # state vector is [q qd]
+
+        self.inport_names(("$\tau$",))
+        self.outport_names(("q", "qd", "qdd"))
+
+        if q0 is None:
+            q0 = np.zeros((robot.n,))
+        else:
+            q0 = smb.getvector(q0, robot.n)
+        self._x0 = np.r_[q0, np.zeros((robot.n,))]
+        self.reset()
+
+    def reset(self) -> None:
+        # Joint acceleration cache.  output() cannot compute qdd itself, since
+        # it needs the torque input and bdsim may call output() before that
+        # input is resolved (petercorke/bdsim#81), so it returns the value from
+        # the last deriv().  Until deriv() has run, and at the start of every
+        # run, that is a zero placeholder: it must be an ndarray, never None,
+        # since bdsim checks that an output keeps the same type.
+        super().reset()
+        self._qdd = np.zeros((self.robot.n,))
+
+    @property
+    def q0(self) -> NDArray:
+        """Initial joint configuration, the first half of the initial state."""
+        return self._x0[: self.robot.n].copy()
+
+    @q0.setter
+    def q0(self, value: ArrayLike) -> None:
+        n = self.robot.n
+        self._x0 = np.r_[smb.getvector(value, n), self._x0[n:]]
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        n = self.robot.n
+        q = x[:n]
+        qd = x[n:]
+        qdd = self._qdd  # cached from the last deriv(), or the zero placeholder
+        return [q, qd, qdd]
+
+    def deriv(self, t: Any, inports: Any, x: Any) -> Any:
+        # return [qd qdd]
+        Q = inports[0]
+        n = self.robot.n
+        if len(Q) != n:
+            raise ValueError("torque vector wrong size")
+
+        q = x[:n]
+        qd = x[n:]
+        qdd = self.robot.accel(q, qd, Q)
+        self._qdd = qdd
+        return np.r_[qd, qdd]
+
+
+# ------------------------------------------------------------------------ #
+
+
+class FDyn_X(ContinuousBlock):
+    r"""
+    :blockname:`FDYN_X`
+
+    Task-space robot arm forward dynamics.
+
+    :inputs: 1
+    :outputs: 3
+    :states: 12
+
+    .. list-table::
+        :header-rows: 1
+
+        *   - Port type
+            - Port number
+            - Types
+            - Description
+        *   - Input
+            - 0
+            - ndarray(6)
+            - :math:`\mathit{\tau}`, end-effector wrench
+        *   - Output
+            - 0
+            - ndarray(6)
+            - :math:`\mathit{x}`, end-effector pose
+        *   - Output
+            - 1
+            - ndarray(6)
+            - :math:`\dot{\mathit{x}}`, end-effector velocity
+        *   - Output
+            - 2
+            - ndarray(6)
+            - :math:`\dot{\mathit{x}}``, end-effector acceleration
+
+    Compute the manipulator arm forward dynamics in task space, the end-effector
+    acceleration for the input end-effector pose and applied end-effector wrench.  The
+    acceleration is integrated to obtain task-space velocity and task-space pose.
+
+    .. seealso:: ``fdyn_x``
+    """
+
+    nin = 1
+    nout = 5
+    outlabels = ("q", "qd", "x", "xd", "xdd")
+    inlabels = "w"
+
+    def __init__(
+        self,
+        robot: Any,
+        q0: Any = None,
+        gravcomp: bool = False,
+        velcomp: bool = False,
+        representation: str = "rpy/xyz",
+        **blockargs: Any,
+    ) -> None:
+        """
+        :param robot: Robot model
+        :type robot: Robot subclass
+        :param q0: Initial joint configuration
+        :type q0: array_like(n)
+        :param gravcomp: perform gravity compensation
+        :type gravcomp: bool
+        :param velcomp: perform velocity term compensation
+        :type velcomp: bool
+        :param representation: task-space representation, defaults to "rpy/xyz"
+        :type representation: str
+
+        :param blockargs: |BlockOptions|
+        :type blockargs: dict
+        """
+        if robot is None:
+            raise ValueError("robot is not defined")
+
+        super().__init__(**blockargs)
+        # self.type = "forward-dynamics-x"
+
+        self.robot = robot
+        self.nstates = robot.n * 2
+        self.gravcomp = gravcomp
+        self.velcomp = velcomp
+        self.representation = representation
+        self.add_param("robot", when="never")  # fixes the ports and states
+        self.add_param("q0", when="setup")
+        self.add_param("gravcomp")
+        self.add_param("velcomp")
+        self.add_param("representation")
+
+        # state vector is [q qd]
+
+        self.inport_names(("w",))
+        self.outport_names(("q", "qd", "x", "xd", "xdd"))
+
+        if q0 is None:
+            q0 = np.zeros((robot.n,))
+        else:
+            q0 = smb.getvector(q0, robot.n)
+        # append qd0, assumed to be zero
+        self._x0 = np.r_[q0, np.zeros((robot.n,))]
+        # Zero-acceleration placeholder for xdd until deriv() has run at
+        # least once. output() must not compute this itself: bdsim calls a
+        # continuous block's output() wherever the compute graph needs its
+        # *state*-derived ports (q, qd, x, xd here), which can happen before
+        # this block's own input is resolved -- notably here, where w
+        # (this block's input) is itself downstream of xd (this block's
+        # output) via the force-control feedback path in opspace.py. deriv()
+        # doesn't have that problem: the integrator only calls it with a
+        # genuinely resolved input. See petercorke/bdsim#81 for the general
+        # case (stateful blocks whose output() needs a resolved input).
+        self.reset()
+
+    def reset(self) -> None:
+        # the cache is cleared at the start of every run, so a run never sees
+        # the last acceleration of the previous one
+        super().reset()
+        self._qdd = np.zeros((self.robot.n,))
+
+    @property
+    def q0(self) -> NDArray:
+        """Initial joint configuration, the first half of the initial state."""
+        return self._x0[: self.robot.n].copy()
+
+    @q0.setter
+    def q0(self, value: ArrayLike) -> None:
+        n = self.robot.n
+        self._x0 = np.r_[smb.getvector(value, n), self._x0[n:]]
+
+    def output(self, t: Any, inports: Any, x: Any) -> Any:
+        n = self.robot.n
+        q = x[:n]
+        qd = x[n:]
+        qdd = self._qdd  # cached from the last deriv() call, or the zero placeholder
+
+        T = self.robot.fkine(q)
+        x = smb.tr2x(T.A)
+
+        Ja = self.robot.jacob0_analytical(q, self.representation)
+        xd = Ja @ qd
+
+        Ja_dot = self.robot.jacob0_dot(q, qd, J0=Ja)
+        xdd = Ja @ qdd + Ja_dot @ qd
+
+        return [q, qd, x, xd, xdd]
+
+    def deriv(self, t: Any, inports: Any, x: Any) -> Any:
+        # return [qd qdd]
+
+        # get current joint space state
+        n = self.robot.n
+        q = x[:n]
+        qd = x[n:]
+
+        # compute joint forces
+        w = inports[0]
+        if len(w) != 6:
+            raise ValueError("wrench vector wrong size")
+        Q = self.robot.jacob0_analytical(q, representation=self.representation).T @ w
+
+        if self.gravcomp or self.velcomp:
+            if self.velcomp:
+                qd_rne = qd
+            else:
+                qd_rne = np.zeros((n,))
+            Q_rne = self.robot.rne(q, qd_rne, np.zeros((n,)))
+            Q += Q_rne
+        qdd = self.robot.accel(q, qd, Q)
+
+        self._qdd = qdd
+        return np.r_[qd, qdd]
+
+
+if __name__ == "__main__":
+    from pathlib import Path
+
+    exec(
+        open(
+            Path(__file__).parent.parent.parent.absolute() / "tests" / "test_blocks.py"
+        ).read()
+    )

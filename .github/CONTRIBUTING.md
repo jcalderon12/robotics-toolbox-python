@@ -1,35 +1,75 @@
-# Contributing to the Robotics Toolbox
+# Contributing to the Robotics Toolbox for Python
+
+Thanks for your interest in contributing! We welcome bug reports, fixes, new features, and documentation improvements.
 
 ## Reporting issues
 
-When reporting issues please include as much detail as possible about your
-operating system, roboticstoolbox version and python version. Whenever possible, please
-also include a brief, self-contained code example that demonstrates the problem.
+Please use the issue template and include:
+
+- Your operating system, Python version, and roboticstoolbox version
+- A short, self-contained code example that reproduces the problem
+
+## Looking for somewhere to start?
+
+Issues labelled [`good first issue`](https://github.com/petercorke/robotics-toolbox-python/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) or [`help wanted`](https://github.com/petercorke/robotics-toolbox-python/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) are a good place to start.
+
+## Before you open a pull request
+
+Several people (and AI coding agents) often pick up the same issue at about the same time, which wastes everyone's effort. To avoid duplicates:
+
+1. **Check for existing work.** Look at the linked pull requests on the issue page, and search open PRs, for example `gh pr list --state open --search "#123"`. If a PR for the same issue already exists, review it or suggest improvements there instead of opening a competing one.
+2. **Claim the issue.** Comment on the issue to say you are working on it. For larger items, the maintainer may assign the issue to you as an "in progress" marker; if you stop working on it, please say so, so someone else can take it.
+3. **Say if you used AI assistance.** AI-assisted contributions are welcome, but please state it in the PR description, and make sure you have read, run and understood the change yourself.
+4. **Flag behaviour changes.** If a change alters numerical results or public behaviour, say so explicitly in the PR description, even if it is a bug fix.
 
 ## Contributing code
 
-Thanks for your interest in contributing code!
+- Keep pull requests scoped to a single feature or fix. If you have several unrelated changes, open separate PRs so each can be reviewed and merged independently.
+- For API changes, propose the change in [Discussions](https://github.com/petercorke/robotics-toolbox-python/discussions) before opening a PR.
+- PR titles follow [Conventional Commits](https://www.conventionalcommits.org/) (`type: description`) — checked automatically on the PR.
+- Code is linted and formatted with [ruff](https://docs.astral.sh/ruff/); configuration is in `pyproject.toml` under `[tool.ruff]`.
+- New or changed code should be type-hinted using modern syntax (`X | Y`, `X | None`, `list[X]`, `dict[K, V]` — not `Union`, `Optional`, `List`, `Dict`).
+- Docstrings use reST style (`:param:`, `:returns:`). Type hints in the function signature already cover types, so `:type:`/`:rtype:` are rarely needed.
+- Any code change should be covered by tests and must not break existing ones. Tests live in `tests/`. Install the dev dependencies with `pip install -e '.[dev]'` (add `,docs` too if you're touching documentation), then run:
 
-We welcome all kinds of contributions including:
+  ```
+  pytest tests/ --ignore=tests/test_blocks.py --timeout=50 --timeout_method=thread -q
+  ```
 
-+ New features
-+ Bug and issue fixes
-+ Cleaning, adding or adding to documentation and docstrings
-+ Adding or fixing Python types
+- Name branches `type/short-description`, with the same types as the PR title (`fix/`, `feat/`, `docs/`, `chore/`, `refactor/`, `test/`).
+- Target branch is `main`.
 
+## AI-assisted contributions
 
-Keep in mind the following when making your contribution:
+AI coding assistants are welcome, but please say so in the PR description (and which tool),
+so the reviewer knows what to look for. Also keep the `Co-Authored-By:` trailer on the commits
+(most tools add it), since the repository squash-merges and the PR description is what is kept.
+You remain responsible for what you submit, so read
+the diff yourself and run the tests before asking for review.
 
-+ Keep pull requests to a **single** feature/bug fix. This makes it much easier to review and merge. If you wish to contribure multiple different fixes or features, that means you should make multiple pull requests.
+## What the checks mean
 
-+ For API changes, propose the API change in the discussions first before opening a pull request.
+Every PR runs a set of automatic checks. Not all of them are equal:
 
-+ Code additions should be formatted using [black](https://pypi.org/project/black/). Our configuration for black can be found in the [pyproject.toml](https://github.com/petercorke/robotics-toolbox-python/blob/master/pyproject.toml) file under the heading `[tool.black]`. Avoid reformatting code using other formatters.
+- **Required:** `All tests passed` (the test matrix on Linux, macOS and Windows, the `mypy`
+  type check and the docs build) and the PR title check. These need to be green to merge.
+- **Advisory, not required:** the Codacy static analysis. Bandit is not run on `tests/`
+  (see `.codacy.yml`), where a plain `assert` is correct, but Codacy may still report
+  findings elsewhere. Please do not rewrite code only to satisfy it, a maintainer will look
+  at anything that matters.
+- **First pull request:** checks do not start until a maintainer approves the workflow run,
+  which GitHub requires for first-time contributors. A PR with no checks yet is normal, not
+  a failure.
+- **A flaky timeout** on one Windows or macOS job is common. Say so in a comment and a
+  maintainer will re-run it.
 
-+ Code addition should be linted using [flake8](https://pypi.org/project/flake8/). Our configuration for black can be found in the [pyproject.toml](https://github.com/petercorke/robotics-toolbox-python/blob/master/pyproject.toml) file under the heading `[tool.flake8]`.
+## Where things go
 
-+ Any code addition needs to be covered by unit tests and not break existing tests. Our unit tests live in `robotics-toolbox-python/tests/`. You can install the dev dependencies using the command `pip install -e '.[dev,docs]'`. You can run the test suite using the command `pytest --cov=roboticstoolbox/ --cov-report term-missing`. Check the output to make sure your additions have been covered by the unit tests.
+- Design notes, plans and write-ups do not go in the repository root. User-facing
+  documentation goes in `docs/source/`, and the project's design principles are in
+  `desiderata.md`.
+- Please do not add test files, data files or notebooks specific to your own project.
 
-+ All methods and classes need to be documented with an appropriate docstring. See our [style guide](https://github.com/petercorke/robotics-toolbox-python/wiki/Documentation-Style-Guide) for documentation. Keep the ordering and formatting as described by the style guide.
+## License
 
-+ New additions should be typed appropriately. See our typing [style guide]().
+By contributing, you agree that your contributions will be licensed under this project's [MIT License](LICENSE).
